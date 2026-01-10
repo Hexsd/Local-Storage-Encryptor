@@ -83,7 +83,6 @@ async function decryptValue(encryptedBase64) {
   }
 }
 
-// ====== ЛОКАЛЬНЫЙ АНАЛИЗ СТРАНИЦЫ ======
 function analyzePageForXSS() {
   let score = 0;
   const issues = [];
