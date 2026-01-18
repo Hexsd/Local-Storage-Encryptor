@@ -3,7 +3,6 @@ const slt = new TextEncoder().encode('}vsosh{');
 const ins = 100000;
 let cryptoKeyPromise = null;
 
-// Проверка состояния защиты
 async function isProtectionEnabled() {
     const { settings = {} } = await chrome.storage.sync.get('settings');
     return settings.protectionEnabled !== false;
@@ -83,7 +82,7 @@ async function decryptValue(encryptedBase64) {
     }
 }
 
-function analyzePageForXSS() {
+function analyze() {
     let score = 0;
     const issues = [];
 
@@ -182,7 +181,6 @@ function analyzePageForXSS() {
 }
 
 async function safeEncryptAll() {
-    // Проверяем защиту
     if (!(await isProtectionEnabled())) {
         await logToExtension('Авто-шифрование пропущено: защита отключена', 'info');
         return { count: 0, skipped: 0, disabled: true };
@@ -253,7 +251,6 @@ async function safeExport() {
         .join('\n');
 }
 
-// ====== ОБМЕН С POPUP ======
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     (async () => {
         try {
@@ -317,14 +314,13 @@ function requestFullAnalysis(analysis) {
 if (chrome.runtime?.sendMessage) {
     window.addEventListener('load', async () => {
         try {
-            // Проверяем, включена ли защита
             if (!(await isProtectionEnabled())) {
                 await logToExtension(`Защита отключена, анализ пропущен для ${window.location.origin}`, 'info');
                 return;
             }
 
             await logToExtension(`Старт локального анализа для ${window.location.origin}`, 'info');
-            const analysis = analyzePageForXSS();
+            const analysis = analyze();
             await logToExtension(
                 `Результат локального анализа ${window.location.origin}: угроза - ${analysis.risk}, счет - ${analysis.score}`,
                 'info'

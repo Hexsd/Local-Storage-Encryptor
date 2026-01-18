@@ -188,7 +188,6 @@ hr {
   margin: 12px 0;
 }
 
-/* Скроллбар для списка сайтов */
 .sites-list::-webkit-scrollbar {
   width: 6px;
 }

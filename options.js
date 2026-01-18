@@ -73,7 +73,6 @@ async function loadSettings() {
     document.getElementById('notifications').checked = settings.notifications !== false;
     document.getElementById('logging').checked = settings.logging !== false;
 
-    // Загружаем состояние защиты
     const protectionEnabled = settings.protectionEnabled !== false;
     updateProtectionButton(protectionEnabled);
 }
@@ -102,7 +101,6 @@ async function toggleProtection() {
 
     updateProtectionButton(nowEnabled);
 
-    // Логируем событие
     chrome.runtime.sendMessage({
         action: 'log_event',
         message: nowEnabled ? 'Защита включена' : 'Защита отключена',
@@ -150,7 +148,6 @@ function setupEventListeners() {
     document.getElementById('save-settings-btn').onclick = saveSettings;
     document.getElementById('clear-logs-btn').onclick = clearLogs;
 
-    // Обработчик кнопки защиты
     document.getElementById('protection-toggle').onclick = toggleProtection;
 }
 

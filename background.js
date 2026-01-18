@@ -5,7 +5,7 @@ chrome.runtime.onInstalled.addListener(() => {
   logEvent('Расширение установлено', 'system');
 });
 
-// обработка сообщений
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   try {
     if (request.action === 'show_notification') {
@@ -35,7 +35,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-// логирование
 async function logEvent(message, type = 'info') {
   try {
     const { logs = [] } = await chrome.storage.local.get('logs');
@@ -52,7 +51,6 @@ async function logEvent(message, type = 'info') {
   }
 }
 
-// запрос к нейронке
 async function askLmStudioAboutSite(data) {
   const { url, risk, score, issues, details } = data;
 
@@ -67,7 +65,7 @@ async function askLmStudioAboutSite(data) {
 - Проблемы: ${(issues || []).join('; ')}
 - Доп. детали: ${JSON.stringify(details || {})}
 
-Ответь СВОБОДНЫМ текстом на русском, но обязательно явно укажи строку вида:
+Ответь СВОБОДНЫМ текстом, но обязательно явно укажи строку вида:
 "Уровень опасности: high" или "Уровень опасности: medium" или "Уровень опасности: low".
 После этого можешь кратко объяснить, почему.
 `;
@@ -108,7 +106,6 @@ async function askLmStudioAboutSite(data) {
     'lm_response'
   );
 
-  // фильтрация ответа
   const lower = text.toLowerCase();
   let danger = 'низкий';
 
@@ -140,7 +137,6 @@ async function askLmStudioAboutSite(data) {
   };
 }
 
-// локальный анализ
 async function handlePageAnalysis(data) {
   const { url, risk, score, issues, encryptedByAI, encryptedCount } = data;
 
@@ -247,7 +243,6 @@ async function handleFullPageAnalysis(data, sender, sendResponse) {
         'lm_verdict'
       );
 
-      // обновляем запись сайта
       const { monitoredSites: sitesAfterAI = [] } = await chrome.storage.sync.get('monitoredSites');
       const idx = sitesAfterAI.findIndex(site => site.url === url);
       const target = idx === -1
