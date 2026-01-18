@@ -47,7 +47,7 @@ h1 {
 .card-desc {
   font-size: 13px;
   opacity: .8;
-  margin: 0 0 12px 0;
+  bottom: 0 0 12px 0;
   line-height: 1.4;
 }
 
@@ -188,7 +188,6 @@ hr {
   margin: 12px 0;
 }
 
-/* Скроллбар для списка сайтов */
 .sites-list::-webkit-scrollbar {
   width: 6px;
 }
@@ -245,6 +244,7 @@ button.decrypt-site-btn:hover {
 }
 
 #clear-logs-btn {
+  margin-top: 10px;
   background: #b3261e;
 }
 
@@ -288,7 +288,6 @@ button.decrypt-site-btn:hover {
 
 .log-time { font-family: monospace; }
 .log-url { opacity: 0.6; }
-/* Современный дизайн с градиентами и необычной раскладкой */
 body {
   background: linear-gradient(135deg, #0a0e1a 0%, #1a0f2e 100%);
 }
@@ -375,15 +374,14 @@ body {
 }
 
 #add-site-btn, #save-settings-btn {
-  background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
+  background: #6d28d9;
   border: none;
   position: relative;
   overflow: hidden;
 }
 
 #add-site-btn:hover, #save-settings-btn:hover {
-  background: linear-gradient(135deg, #a78bfa 0%, #8b5cf6 100%);
-  box-shadow: 0 4px 15px rgba(139, 92, 246, 0.4);
+  background: #a78bfa;
 }
 
 .badge {
@@ -437,11 +435,18 @@ button.danger {
   transition: all 0.3s ease;
 }
 
-button.danger:hover {
-  box-shadow: 0 4px 15px rgba(220, 38, 38, 0.3);
-}
-
 .empty-state {
   position: relative;
   z-index: 1;
+}
+
+button.protection-on {
+  float: right;
+  background: #991b1b;
+}
+
+button.protection-off {
+  float: right;
+  background: #154f2a;
+  color: #8ef0a9;
 }
