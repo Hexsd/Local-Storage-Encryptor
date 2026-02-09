@@ -151,7 +151,7 @@ button.danger {
 
 .progress-bar {
   height: 100%;
-  background: linear-gradient(90deg, #9bc3ff 0%, #6c5ce7 100%);
+  background: #9bc3ff;
   transition: width .3s ease;
 }
 
@@ -289,7 +289,7 @@ button.decrypt-site-btn:hover {
 .log-time { font-family: monospace; }
 .log-url { opacity: 0.6; }
 body {
-  background: linear-gradient(135deg, #0a0e1a 0%, #1a0f2e 100%);
+  background: #0a0e1a;
 }
 
 .grid {
@@ -301,7 +301,7 @@ body {
 }
 
 .card {
-  background: linear-gradient(135deg, rgba(30, 20, 60, 0.6) 0%, rgba(15, 10, 35, 0.8) 100%);
+  background: rgba(15, 10, 35, 0.8);
   border: 1px solid rgba(139, 92, 246, 0.3);
   backdrop-filter: blur(10px);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
@@ -316,7 +316,6 @@ body {
   right: -50%;
   width: 300px;
   height: 300px;
-  background: radial-gradient(circle, rgba(139, 92, 246, 0.1) 0%, transparent 70%);
   border-radius: 50%;
   pointer-events: none;
 }
@@ -396,7 +395,7 @@ body {
 }
 
 .progress-bar {
-  background: linear-gradient(90deg, #a78bfa 0%, #8b5cf6 100%);
+  background: #a78bfa;
   box-shadow: 0 0 10px rgba(139, 92, 246, 0.6);
 }
 

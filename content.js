@@ -146,10 +146,6 @@ function analyze() {
             httpScripts++;
             score += 15;
         }
-        if (badDomains.some(domain => src.includes(domain))) {
-            score += 30;
-            suspiciousScripts++;
-        }
     });
     if (suspiciousScripts > 0) issues.push(`Подозрительные скрипты: ${suspiciousScripts}`);
     if (httpScripts > 0) issues.push(`HTTP на HTTPS странице: ${httpScripts}`);
@@ -163,8 +159,8 @@ function analyze() {
     }
 
     let risk = 'low';
-    if (score >= 70) risk = 'high';
-    else if (score >= 35) risk = 'medium';
+    if (score >= 50) risk = 'high';
+    else if (score >= 25) risk = 'medium';
 
     return {
         score: Math.min(score, 100),
