@@ -1,19 +1,25 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Local Storage Encryptor</title>
-  <link rel="stylesheet" type="text/css" href="popup.css" />
+  <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <h2>Local Storage Encryptor</h2>
+  <header class="popup-header" data-animate>
+    <h2>Local Storage Encryptor</h2>
+    <p>Быстрые действия для текущей вкладки</p>
+  </header>
 
-  <button id="encryptBtn">Зашифровать данные</button>
-  <button id="decryptBtn">Расшифровать данные</button>
-  <button id="exportBtn">Экспорт данных</button>
-  <button id="optionsBtn">Открыть настройки</button>
+  <main class="actions" data-animate>
+    <button id="encryptBtn" class="primary" type="button">Зашифровать</button>
+    <button id="decryptBtn" type="button">Расшифровать</button>
+    <button id="exportBtn" type="button">Экспорт</button>
+    <button id="optionsBtn" type="button">Настройки</button>
+  </main>
 
-  <div id="status"></div>
+  <div id="status" class="status" role="status" aria-live="polite"></div>
 
   <script src="popup.js"></script>
 </body>

@@ -1,221 +1,464 @@
-document.addEventListener('DOMContentLoaded', async () => {
-    await loadSites();
-    await loadStats();
-    await loadSettings();
-    await loadLogs();
-    setupEventListeners();
+const REFRESH_INTERVAL_MS = 5000;
+const FEEDBACK_TIMEOUT_MS = 2600;
+const VISIBLE_LOGS_LIMIT = 50;
+const ALLOWED_LOG_TYPES = new Set(['error', 'warn', 'info', 'system', 'auto_encrypt']);
 
-    setInterval(async () => {
-        await loadSites();
-        await loadStats();
-        await loadLogs();
-    }, 5000);
-});
+const dom = {};
+let refreshTimer = null;
+let feedbackTimer = null;
+let saveButtonTimer = null;
+
+document.addEventListener('DOMContentLoaded', init);
+
+async function init() {
+  cacheDom();
+  bindEvents();
+
+  await initialLoad();
+
+  refreshTimer = window.setInterval(refreshDynamicData, REFRESH_INTERVAL_MS);
+  window.addEventListener('beforeunload', stopRefresh, { once: true });
+}
+
+function cacheDom() {
+  dom.siteInput = document.getElementById('site-input');
+  dom.siteFeedback = document.getElementById('site-feedback');
+  dom.addSiteBtn = document.getElementById('add-site-btn');
+  dom.sitesList = document.getElementById('sites-list');
+
+  dom.threatsToday = document.getElementById('threats-today');
+  dom.threatsMonth = document.getElementById('threats-month');
+  dom.sitesMonitored = document.getElementById('sites-monitored');
+
+  dom.securityScore = document.getElementById('security-score');
+  dom.securityProgress = document.querySelector('.progress');
+  dom.securityBar = document.getElementById('security-bar');
+  dom.riskDesc = document.getElementById('risk-desc');
+
+  dom.modeSelect = document.getElementById('mode-select');
+  dom.notifications = document.getElementById('notifications');
+  dom.logging = document.getElementById('logging');
+  dom.settingsForm = document.getElementById('settings-form');
+  dom.saveSettingsBtn = document.getElementById('save-settings-btn');
+  dom.saveSettingsBtn.dataset.baseLabel = dom.saveSettingsBtn.textContent;
+
+  dom.logsList = document.getElementById('logs-list');
+  dom.clearLogsBtn = document.getElementById('clear-logs-btn');
+
+  dom.protectionToggle = document.getElementById('protection-toggle');
+  dom.protectionState = document.getElementById('protection-state');
+}
+
+function bindEvents() {
+  dom.addSiteBtn.addEventListener('click', addSite);
+  dom.siteInput.addEventListener('keydown', onSiteInputKeyDown);
+  dom.siteInput.addEventListener('input', onSiteInputChanged);
+
+  dom.sitesList.addEventListener('click', onSitesListClick);
+
+  dom.settingsForm.addEventListener('submit', saveSettings);
+  dom.clearLogsBtn.addEventListener('click', clearLogs);
+  dom.protectionToggle.addEventListener('click', toggleProtection);
+}
+
+function stopRefresh() {
+  if (!refreshTimer) return;
+  window.clearInterval(refreshTimer);
+  refreshTimer = null;
+}
+
+async function initialLoad() {
+  try {
+    await Promise.all([loadSites(), loadStats(), loadSettings(), loadLogs()]);
+  } catch (error) {
+    console.error('Ошибка начальной загрузки данных options:', error);
+    showSiteFeedback('Не удалось загрузить данные страницы.', 'error');
+  }
+}
+
+async function refreshDynamicData() {
+  try {
+    await Promise.all([loadSites(), loadStats(), loadLogs()]);
+  } catch (error) {
+    console.error('Ошибка периодического обновления options:', error);
+  }
+}
+
+function onSiteInputKeyDown(event) {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  addSite();
+}
+
+function onSiteInputChanged() {
+  dom.siteInput.classList.remove('is-invalid');
+  if (dom.siteFeedback.classList.contains('is-error')) {
+    clearSiteFeedback();
+  }
+}
+
+function onSitesListClick(event) {
+  const removeBtn = event.target.closest('.remove-site-btn');
+  if (!removeBtn) return;
+
+  const siteRow = removeBtn.closest('.site-row');
+  if (!siteRow?.dataset.site) return;
+
+  removeSite(siteRow.dataset.site);
+}
 
 async function loadSites() {
-    const { monitoredSites = [] } = await chrome.storage.sync.get('monitoredSites');
-    const sitesList = document.getElementById('sites-list');
-    sitesList.innerHTML = '';
+  const { monitoredSites = [] } = await chrome.storage.sync.get('monitoredSites');
+  const safeSites = monitoredSites.filter((site) => site && typeof site.url === 'string' && site.url.trim());
+  dom.sitesList.replaceChildren();
 
-    if (monitoredSites.length === 0) {
-        sitesList.innerHTML = '<p style="text-align:center; opacity:0.6; padding:16px">Нет отслеживаемых сайтов</p>';
-        return;
-    }
+  if (safeSites.length === 0) {
+    appendEmptyState(dom.sitesList, 'Нет отслеживаемых сайтов');
+    return;
+  }
 
-    monitoredSites.forEach(site => {
-        const riskBadge = getRiskBadge(site.risk || 'low');
-        const row = document.createElement('div');
-        row.className = 'site-row';
-        row.dataset.site = site.url;
-        row.innerHTML = `
-            <span>${site.url}</span>
-            <span class="site-actions">
-                <span class="badge ${riskBadge.class}">${riskBadge.text}</span>
-                <button class="danger remove-site-btn">Удалить</button>
-            </span>
-        `;
-        sitesList.appendChild(row);
-    });
+  safeSites.forEach((site) => {
+    dom.sitesList.appendChild(createSiteRow(site));
+  });
+}
+
+function createSiteRow(site) {
+  const riskBadge = getRiskBadge(site.risk || 'low');
+
+  const row = document.createElement('div');
+  row.className = 'site-row';
+  row.dataset.site = site.url;
+
+  const siteUrl = document.createElement('span');
+  siteUrl.className = 'site-url';
+  siteUrl.textContent = site.url;
+
+  const actions = document.createElement('span');
+  actions.className = 'site-actions';
+
+  const badge = document.createElement('span');
+  badge.className = `badge ${riskBadge.className}`;
+  badge.textContent = riskBadge.text;
+
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'danger remove-site-btn';
+  removeBtn.textContent = 'Удалить';
+
+  actions.append(badge, removeBtn);
+  row.append(siteUrl, actions);
+
+  return row;
 }
 
 async function loadStats() {
-    const { stats = {} } = await chrome.storage.local.get('stats');
+  const [{ stats = {} }, { monitoredSites = [] }] = await Promise.all([
+    chrome.storage.local.get('stats'),
+    chrome.storage.sync.get('monitoredSites')
+  ]);
+  const safeSites = monitoredSites.filter((site) => site && typeof site.url === 'string' && site.url.trim());
 
-    document.getElementById('threats-today').textContent = stats.threatsToday || 0;
-    document.getElementById('threats-month').textContent = stats.threatsMonth || 0;
-    document.getElementById('sites-monitored').textContent = stats.sitesCount || 0;
+  dom.threatsToday.textContent = String(toPositiveInteger(stats.threatsToday));
+  dom.threatsMonth.textContent = String(toPositiveInteger(stats.threatsMonth));
 
-    const index = stats.securityIndex || 100;
-    document.getElementById('security-score').textContent = `${index} / 100`;
-    document.getElementById('security-bar').style.width = `${index}%`;
+  const sitesCount = safeSites.length;
+  dom.sitesMonitored.textContent = String(sitesCount);
 
-    let riskText = 'низкий', riskColor = '#8ef0a9';
-    if (index < 40) {
-        riskText = 'критический';
-        riskColor = '#f08e8e';
-    } else if (index < 70) {
-        riskText = 'высокий';
-        riskColor = '#f0d88e';
-    } else if (index < 90) {
-        riskText = 'средний';
-        riskColor = '#f0c88e';
-    }
+  const indexSource = sitesCount === 0 ? 100 : stats.securityIndex ?? 100;
+  const index = clamp(toPositiveInteger(indexSource), 0, 100);
+  dom.securityScore.textContent = `${index} / 100`;
+  dom.securityBar.style.width = `${index}%`;
+  dom.securityProgress.setAttribute('aria-valuenow', String(index));
 
-    const riskDesc = document.getElementById('risk-desc');
-    riskDesc.textContent = `Уровень риска: ${riskText}.`;
-    riskDesc.style.color = riskColor;
+  const risk = getRiskByIndex(index);
+  dom.riskDesc.dataset.risk = risk.key;
+  dom.riskDesc.textContent = `Уровень риска: ${risk.text}.`;
 }
 
 async function loadSettings() {
-    const { settings = {} } = await chrome.storage.sync.get('settings');
+  const { settings = {} } = await chrome.storage.sync.get('settings');
 
-    document.getElementById('mode-select').value = settings.mode || 'hybrid';
-    document.getElementById('notifications').checked = settings.notifications !== false;
-    document.getElementById('logging').checked = settings.logging !== false;
+  dom.modeSelect.value = settings.mode === 'local' ? 'local' : 'hybrid';
+  dom.notifications.checked = settings.notifications !== false;
+  dom.logging.checked = settings.logging !== false;
 
-    const protectionEnabled = settings.protectionEnabled !== false;
-    updateProtectionButton(protectionEnabled);
+  const protectionEnabled = settings.protectionEnabled !== false;
+  updateProtectionUi(protectionEnabled);
 }
 
-function updateProtectionButton(enabled) {
-    const btn = document.getElementById('protection-toggle');
-    if (!btn) return;
+function updateProtectionUi(enabled) {
+  dom.protectionToggle.textContent = enabled ? 'Отключить защиту' : 'Включить защиту';
+  dom.protectionToggle.classList.toggle('protection-on', enabled);
+  dom.protectionToggle.classList.toggle('protection-off', !enabled);
 
-    if (enabled) {
-        btn.textContent = 'Отключить защиту';
-        btn.classList.remove('protection-off');
-        btn.classList.add('protection-on');
-    } else {
-        btn.textContent = 'Включить защиту';
-        btn.classList.remove('protection-on');
-        btn.classList.add('protection-off');
-    }
+  dom.protectionState.textContent = enabled ? 'Защита активна' : 'Защита отключена';
+  dom.protectionState.classList.toggle('is-on', enabled);
+  dom.protectionState.classList.toggle('is-off', !enabled);
 }
 
 async function toggleProtection() {
-    const { settings = {} } = await chrome.storage.sync.get('settings');
-    const nowEnabled = !(settings.protectionEnabled !== false);
+  const { settings = {} } = await chrome.storage.sync.get('settings');
+  const currentlyEnabled = settings.protectionEnabled !== false;
+  const nextState = !currentlyEnabled;
 
-    settings.protectionEnabled = nowEnabled;
-    await chrome.storage.sync.set({ settings });
+  settings.protectionEnabled = nextState;
+  await chrome.storage.sync.set({ settings });
 
-    updateProtectionButton(nowEnabled);
+  updateProtectionUi(nextState);
 
-    chrome.runtime.sendMessage({
-        action: 'log_event',
-        message: nowEnabled ? 'Защита включена' : 'Защита отключена',
-        type: 'system'
-    });
+  chrome.runtime.sendMessage({
+    action: 'log_event',
+    message: nextState ? 'Защита включена' : 'Защита отключена',
+    type: 'system'
+  });
 }
 
 async function loadLogs() {
-    const { logs = [] } = await chrome.storage.local.get('logs');
-    const logsList = document.getElementById('logs-list');
+  const { logs = [] } = await chrome.storage.local.get('logs');
+  dom.logsList.replaceChildren();
 
-    if (logs.length === 0) {
-        logsList.innerHTML = '<p style="text-align:center; opacity:0.6; font-size:13px">Логи пока пусты</p>';
-        return;
-    }
+  const recentLogs = logs.slice(-VISIBLE_LOGS_LIMIT).reverse();
+  dom.clearLogsBtn.disabled = recentLogs.length === 0;
 
-    logsList.innerHTML = '';
-    logs.slice().reverse().slice(0, 50).forEach(log => {
-        const entry = document.createElement('div');
-        entry.className = 'log-entry';
-        const typeClass = log.type === 'error' ? 'error' : log.type === 'warn' ? 'warn' : 'info';
-        entry.innerHTML = `
-            <div class="log-message">
-                <span class="log-type ${typeClass}">${log.type.toUpperCase()}</span>
-                ${log.message}
-            </div>
-            <div class="log-details">
-                <span class="log-time">${new Date(log.timestamp).toLocaleString('ru-RU')}</span>
-                <span class="log-url">${log.url || 'background'}</span>
-            </div>
-        `;
-        logsList.appendChild(entry);
-    });
+  if (recentLogs.length === 0) {
+    appendEmptyState(dom.logsList, 'Логи пока пусты');
+    return;
+  }
+
+  recentLogs.forEach((log) => {
+    dom.logsList.appendChild(createLogEntry(log));
+  });
 }
 
-function setupEventListeners() {
-    document.getElementById('add-site-btn').onclick = addSite;
+function createLogEntry(log) {
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
 
-    document.getElementById('sites-list').onclick = async (e) => {
-        if (e.target.classList.contains('remove-site-btn')) {
-            removeSite(e.target.closest('.site-row').dataset.site);
-        }
-    };
+  const messageLine = document.createElement('div');
+  messageLine.className = 'log-message';
 
-    document.getElementById('save-settings-btn').onclick = saveSettings;
-    document.getElementById('clear-logs-btn').onclick = clearLogs;
+  const type = normalizeLogType(log.type);
+  const typeBadge = document.createElement('span');
+  typeBadge.className = `log-type ${type}`;
+  typeBadge.textContent = type.toUpperCase().replace('_', ' ');
 
-    document.getElementById('protection-toggle').onclick = toggleProtection;
+  const messageText = document.createTextNode(String(log.message ?? 'Без сообщения'));
+  messageLine.append(typeBadge, messageText);
+
+  const details = document.createElement('div');
+  details.className = 'log-details';
+
+  const time = document.createElement('span');
+  time.className = 'log-time';
+  time.textContent = formatTimestamp(log.timestamp);
+
+  const url = document.createElement('span');
+  url.className = 'log-url';
+  url.textContent = log.url || 'background';
+
+  details.append(time, url);
+  entry.append(messageLine, details);
+
+  return entry;
 }
 
 async function addSite() {
-    const input = document.getElementById('site-input');
-    const url = input.value.trim();
+  const rawUrl = dom.siteInput.value.trim();
+  const normalizedUrl = normalizeHttpUrl(rawUrl);
 
-    if (!url || !url.startsWith('http')) {
-        alert('Введите корректный URL (https://...)');
-        return;
-    }
+  if (!normalizedUrl) {
+    dom.siteInput.classList.add('is-invalid');
+    showSiteFeedback('Введите корректный URL вида https://example.com', 'error');
+    return;
+  }
 
-    const { monitoredSites = [] } = await chrome.storage.sync.get('monitoredSites');
+  const { monitoredSites = [] } = await chrome.storage.sync.get('monitoredSites');
+  const safeSites = monitoredSites.filter((site) => site && typeof site.url === 'string' && site.url.trim());
+  const exists = safeSites.some((site) => site.url === normalizedUrl);
 
-    if (!monitoredSites.some(site => site.url === url)) {
-        monitoredSites.push({ url, risk: 'low', added: Date.now() });
-        await chrome.storage.sync.set({ monitoredSites });
-    }
+  if (exists) {
+    showSiteFeedback('Этот сайт уже есть в списке.', 'error');
+    return;
+  }
 
-    input.value = '';
-    await loadSites();
+  safeSites.push({ url: normalizedUrl, risk: 'low', added: Date.now() });
+  await chrome.storage.sync.set({ monitoredSites: safeSites });
+  await syncSitesCount(safeSites.length);
+
+  dom.siteInput.value = '';
+  dom.siteInput.classList.remove('is-invalid');
+  showSiteFeedback('Сайт добавлен в мониторинг.', 'success');
+
+  await Promise.all([loadSites(), loadStats()]);
 }
 
 async function removeSite(url) {
-    const { monitoredSites = [] } = await chrome.storage.sync.get('monitoredSites');
-    const filtered = monitoredSites.filter(site => site.url !== url);
-    await chrome.storage.sync.set({ monitoredSites: filtered });
-    await loadSites();
+  const { monitoredSites = [] } = await chrome.storage.sync.get('monitoredSites');
+  const safeSites = monitoredSites.filter((site) => site && typeof site.url === 'string' && site.url.trim());
+  const filtered = safeSites.filter((site) => site.url !== url);
+
+  if (filtered.length === safeSites.length) return;
+
+  await chrome.storage.sync.set({ monitoredSites: filtered });
+  await syncSitesCount(filtered.length);
+  showSiteFeedback('Сайт удалён из списка.', 'success');
+
+  await Promise.all([loadSites(), loadStats()]);
 }
 
-async function saveSettings(e) {
-    if (e) e.preventDefault();
+async function saveSettings(event) {
+  event.preventDefault();
 
-    const { settings = {} } = await chrome.storage.sync.get('settings');
+  const { settings = {} } = await chrome.storage.sync.get('settings');
 
-    const newSettings = {
-        ...settings,
-        mode: document.getElementById('mode-select').value,
-        notifications: document.getElementById('notifications').checked,
-        logging: document.getElementById('logging').checked,
-        autoEncrypt: true
-    };
+  const newSettings = {
+    ...settings,
+    mode: dom.modeSelect.value,
+    notifications: dom.notifications.checked,
+    logging: dom.logging.checked,
+    autoEncrypt: true
+  };
 
-    await chrome.storage.sync.set({ settings: newSettings });
+  await chrome.storage.sync.set({ settings: newSettings });
+  flashSaveButton();
+}
 
-    const btn = document.getElementById('save-settings-btn');
-    const original = btn.textContent;
-    btn.textContent = 'Сохранено!';
-    btn.style.background = '#2ea043';
+function flashSaveButton() {
+  const baseLabel = dom.saveSettingsBtn.dataset.baseLabel || 'Сохранить настройки';
 
-    setTimeout(() => {
-        btn.textContent = original;
-        btn.style.background = '#6c5ce7';
-    }, 1500);
+  if (saveButtonTimer) {
+    window.clearTimeout(saveButtonTimer);
+    saveButtonTimer = null;
+  }
+
+  dom.saveSettingsBtn.textContent = 'Сохранено';
+  dom.saveSettingsBtn.classList.add('is-saved');
+
+  saveButtonTimer = window.setTimeout(() => {
+    dom.saveSettingsBtn.textContent = baseLabel;
+    dom.saveSettingsBtn.classList.remove('is-saved');
+    saveButtonTimer = null;
+  }, 1400);
 }
 
 async function clearLogs() {
-    if (confirm('Очистить все логи?')) {
-        await chrome.storage.local.set({ logs: [] });
-        await loadLogs();
-    }
+  const shouldClear = window.confirm('Очистить все логи?');
+  if (!shouldClear) return;
+
+  await chrome.storage.local.set({ logs: [] });
+  await loadLogs();
 }
 
 function getRiskBadge(risk) {
-    const badges = {
-        low: { class: 'badge-ok', text: 'Низкий' },
-        medium: { class: 'badge-warn', text: 'Средний' },
-        high: { class: 'badge-risk', text: 'Высокий' }
-    };
-    return badges[risk] || badges.low;
+  const normalizedRisk = typeof risk === 'string' ? risk.toLowerCase() : 'low';
+
+  switch (normalizedRisk) {
+    case 'critical':
+      return { className: 'badge-risk', text: 'Критический' };
+    case 'high':
+      return { className: 'badge-risk', text: 'Высокий' };
+    case 'medium':
+      return { className: 'badge-warn', text: 'Средний' };
+    default:
+      return { className: 'badge-ok', text: 'Низкий' };
+  }
+}
+
+function getRiskByIndex(index) {
+  if (index < 40) {
+    return { key: 'critical', text: 'критический' };
+  }
+
+  if (index < 70) {
+    return { key: 'high', text: 'высокий' };
+  }
+
+  if (index < 90) {
+    return { key: 'medium', text: 'средний' };
+  }
+
+  return { key: 'low', text: 'низкий' };
+}
+
+function normalizeLogType(type) {
+  const normalized = String(type || 'info').toLowerCase().replace('-', '_');
+  return ALLOWED_LOG_TYPES.has(normalized) ? normalized : 'info';
+}
+
+function formatTimestamp(timestamp) {
+  const value = Number(timestamp);
+  if (!Number.isFinite(value)) return '-';
+
+  return new Date(value).toLocaleString('ru-RU');
+}
+
+function normalizeHttpUrl(value) {
+  if (!value) return null;
+
+  try {
+    const parsed = new URL(value);
+
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+
+    const trimmedPath = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/$/, '');
+    return `${parsed.origin}${trimmedPath}${parsed.search}`;
+  } catch {
+    return null;
+  }
+}
+
+function appendEmptyState(container, text) {
+  const empty = document.createElement('p');
+  empty.className = 'empty-state';
+  empty.textContent = text;
+  container.appendChild(empty);
+}
+
+async function syncSitesCount(sitesCount) {
+  const { stats = {} } = await chrome.storage.local.get('stats');
+  const nextStats = { ...stats, sitesCount };
+
+  if (sitesCount === 0) {
+    nextStats.securityIndex = 100;
+  }
+
+  await chrome.storage.local.set({ stats: nextStats });
+}
+
+function showSiteFeedback(text, type = 'info') {
+  if (feedbackTimer) {
+    window.clearTimeout(feedbackTimer);
+    feedbackTimer = null;
+  }
+
+  dom.siteFeedback.textContent = text;
+  dom.siteFeedback.className = `feedback is-visible ${feedbackClassByType(type)}`;
+
+  feedbackTimer = window.setTimeout(() => {
+    clearSiteFeedback();
+  }, FEEDBACK_TIMEOUT_MS);
+}
+
+function clearSiteFeedback() {
+  dom.siteFeedback.textContent = '';
+  dom.siteFeedback.className = 'feedback';
+}
+
+function feedbackClassByType(type) {
+  if (type === 'error') return 'is-error';
+  if (type === 'success') return 'is-success';
+  return '';
+}
+
+function toPositiveInteger(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  if (numeric < 0) return 0;
+  return Math.round(numeric);
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
 }

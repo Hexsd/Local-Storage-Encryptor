@@ -1,92 +1,111 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Настройки - Local Storage Encryptor</title>
-    <link rel="stylesheet" href="options.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Настройки - Local Storage Encryptor</title>
+  <link rel="stylesheet" href="options.css">
 </head>
 <body>
-    <header>
-        <div class="head">
-            <h1>Local Storage Encryptor</h1>
-            <button id="protection-toggle" class="protection-on">Отключить защиту</button>
+  <header class="page-header" data-animate>
+    <div>
+      <h1>Local Storage Encryptor</h1>
+      <p class="subtitle">Управление шифрованием localStorage и мониторингом угроз.</p>
+    </div>
+    <div class="header-actions">
+      <span id="protection-state" class="state-pill" aria-live="polite">Защита активна</span>
+      <button id="protection-toggle" class="protection-on" type="button">Отключить защиту</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <div class="column column-main">
+      <section class="card card-sites" data-animate>
+        <div class="card-head">
+          <h2>Отслеживаемые сайты</h2>
+          <p class="card-desc">Сайты, которые автоматически анализируются расширением.</p>
         </div>
-        <p class="subtitle">Управление шифрованием локального хранилища и защитой от XSS-атак.</p>
-    </header>
-    <main class="grid">
-        <section class="card card--full-height">
-            <h2>Отслеживаемые сайты</h2>
-            <div class="input-group">
-                <input id="site-input" type="url" placeholder="https://example.com" aria-label="URL сайта">
-                <button id="add-site-btn">Добавить</button>
-            </div>
-            <div class="sites-list" id="sites-list" role="list"></div>
-            <p class="card-desc">Сайты, которые автоматически анализируются расширением.</p>
-        </section>
+        <div class="input-group">
+          <input id="site-input" type="url" placeholder="https://example.com" aria-label="URL сайта">
+          <button id="add-site-btn" type="button">Добавить</button>
+        </div>
+        <p id="site-feedback" class="feedback" aria-live="polite"></p>
+        <div class="sites-list" id="sites-list" role="list"></div>
+      </section>
 
-        <section class="card">
-            <h2>Общая безопасность</h2>
-            <div class="stat-item">
-                <span>Индекс безопасности</span>
-                <strong id="security-score" aria-live="polite">100 / 100</strong>
-            </div>
-            <div class="progress" role="progressbar" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100">
-                <div class="progress-bar" id="security-bar"></div>
-            </div>
-            <p class="card-desc" id="risk-desc">Уровень риска: низкий.</p>
-        </section>
-
-        <section class="card">
-            <h2>Статистика угроз</h2>
-            <div class="stat-item">
-                <span>Обнаружено угроз сегодня</span>
-                <span id="threats-today" aria-live="polite">0</span>
-            </div>
-            <div class="stat-item">
-                <span>Всего угроз за месяц</span>
-                <span id="threats-month" aria-live="polite">0</span>
-            </div>
-            <div class="stat-item">
-                <span>Сайтов под наблюдением</span>
-                <span id="sites-monitored" aria-live="polite">0</span>
-            </div>
-            <hr>
-            <p class="card-desc">Статистика обновляется при посещении сайтов.</p>
-        </section>
-
-        <section class="card">
-            <h2>Настройки расширения</h2>
-            <form id="settings-form">
-                <div class="settings-row">
-                    <label for="mode-select">Режим анализа</label>
-                    <select id="mode-select">
-                        <option value="local">Локальный</option>
-                        <option value="hybrid" selected>ML (гибридный)</option>
-                    </select>
-                </div>
-                <div class="settings-row checkbox">
-                    <input id="notifications" type="checkbox" checked>
-                    <label for="notifications">Уведомления</label>
-                </div>
-                <div class="settings-row checkbox">
-                    <input id="logging" type="checkbox" checked>
-                    <label for="logging">Логирование</label>
-                </div>
-                <hr>
-                <button type="submit" id="save-settings-btn">Сохранить настройки</button>
-            </form>
-        </section>
-
-        <section class="card">
+      <section class="card card-logs" data-animate>
+        <div class="card-head card-head--row">
+          <div>
             <h2>Журнал событий</h2>
             <p class="card-desc">Последние действия расширения</p>
-            <div class="logs-list" id="logs-list" role="log">
-                <p class="empty-state">Логи пока пусты</p>
-            </div>
-            <button id="clear-logs-btn" type="button">Очистить логи</button>
-        </section>
-    </main>
-    <script src="options.js"></script>
+          </div>
+          <button id="clear-logs-btn" type="button">Очистить</button>
+        </div>
+        <div class="logs-list" id="logs-list" role="log" aria-live="polite">
+          <p class="empty-state">Логи пока пусты</p>
+        </div>
+      </section>
+    </div>
+
+    <div class="column column-side">
+      <section class="card card-security" data-animate>
+        <h2>Общая безопасность</h2>
+        <div class="stat-item">
+          <span>Индекс безопасности</span>
+          <strong id="security-score" aria-live="polite">100 / 100</strong>
+        </div>
+        <div class="progress" role="progressbar" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100">
+          <div class="progress-bar" id="security-bar"></div>
+        </div>
+        <p class="card-desc" id="risk-desc" data-risk="low">Уровень риска: низкий.</p>
+      </section>
+
+      <section class="card card-threats" data-animate>
+        <h2>Статистика угроз</h2>
+        <div class="stats-grid">
+          <div class="stat-tile">
+            <span class="tile-label">За сегодня</span>
+            <strong id="threats-today" aria-live="polite">0</strong>
+          </div>
+          <div class="stat-tile">
+            <span class="tile-label">За месяц</span>
+            <strong id="threats-month" aria-live="polite">0</strong>
+          </div>
+          <div class="stat-tile">
+            <span class="tile-label">Сайтов под наблюдением</span>
+            <strong id="sites-monitored" aria-live="polite">0</strong>
+          </div>
+        </div>
+        <p class="card-desc">Метрики обновляются автоматически при активности расширения.</p>
+      </section>
+
+      <section class="card card-settings" data-animate>
+        <h2>Настройки расширения</h2>
+        <form id="settings-form" novalidate>
+          <div class="settings-row">
+            <label for="mode-select">Режим анализа</label>
+            <select id="mode-select">
+              <option value="local">Локальный</option>
+              <option value="hybrid">ML (гибридный)</option>
+            </select>
+          </div>
+
+          <label class="toggle-row" for="notifications">
+            <input id="notifications" type="checkbox" checked>
+            <span>Уведомления</span>
+          </label>
+
+          <label class="toggle-row" for="logging">
+            <input id="logging" type="checkbox" checked>
+            <span>Логирование</span>
+          </label>
+
+          <button type="submit" id="save-settings-btn">Сохранить настройки</button>
+        </form>
+      </section>
+    </div>
+  </main>
+
+  <script src="options.js"></script>
 </body>
 </html>

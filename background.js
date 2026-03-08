@@ -138,7 +138,7 @@ async function askLmStudioAboutSite(data) {
 }
 
 async function handlePageAnalysis(data) {
-  const { url, risk, score, issues, encryptedByAI, encryptedCount } = data;
+  const { url, risk, score, issues, details, encryptedByAI, encryptedCount } = data;
 
   const { monitoredSites = [] } = await chrome.storage.sync.get('monitoredSites');
   const existingIndex = monitoredSites.findIndex(site => site.url === url);
@@ -148,6 +148,7 @@ async function handlePageAnalysis(data) {
     risk,
     score,
     issues: issues || [],
+    details: details || null,
     added: existingIndex === -1 ? Date.now() : (monitoredSites[existingIndex].added || Date.now())
   };
 
@@ -171,7 +172,7 @@ async function handlePageAnalysis(data) {
 }
 
 async function handleFullPageAnalysis(data, sender, sendResponse) {
-  const { url, risk, score, issues } = data;
+  const { url, risk, score, issues, details } = data;
 
   try {
     await logEvent(
@@ -187,6 +188,7 @@ async function handleFullPageAnalysis(data, sender, sendResponse) {
       risk,
       score,
       issues: issues || [],
+      details: details || null,
       added: existingIndex === -1 ? Date.now() : (monitoredSites[existingIndex].added || Date.now())
     };
 
@@ -212,6 +214,7 @@ async function handleFullPageAnalysis(data, sender, sendResponse) {
           risk,
           score,
           issues: issues || [],
+          details: details || null,
           aiDanger: 'low',
           aiReason: '',
           aiRecommendation: ''
@@ -254,6 +257,7 @@ async function handleFullPageAnalysis(data, sender, sendResponse) {
         risk,
         score,
         issues: issues || [],
+        details: details || null,
         aiDanger,
         aiReason,
         aiRecommendation
@@ -275,6 +279,7 @@ async function handleFullPageAnalysis(data, sender, sendResponse) {
         risk,
         score,
         issues: issues || [],
+        details: details || null,
         aiDanger,
         aiReason,
         aiRecommendation

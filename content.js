@@ -3,6 +3,354 @@ const slt = new TextEncoder().encode('}vsosh{');
 const ins = 100000;
 let cryptoKeyPromise = null;
 
+const SENSITIVE_KEY_PATTERN = /(token|auth|session|jwt|bearer|secret|pass|credential|sid|csrf|xsrf|refresh|access)/i;
+const LARGE_VALUE_THRESHOLD = 2048;
+const MIN_OBSERVATION_MS = 3000;
+const CORRELATION_WINDOW_MS = 2500;
+
+const runtimeSignals = createRuntimeSignals();
+setupRuntimeMonitoring();
+
+function createRuntimeSignals() {
+    return {
+        startedAt: Date.now(),
+        probeReady: false,
+        storage: {
+            localReads: 0,
+            localWrites: 0,
+            localRemoves: 0,
+            localClears: 0,
+            sessionReads: 0,
+            sessionWrites: 0,
+            sessionRemoves: 0,
+            sessionClears: 0,
+            sensitiveKeyWrites: 0,
+            highEntropyWrites: 0,
+            largeValueWrites: 0,
+            encodedLikeWrites: 0,
+            keyStats: Object.create(null),
+            lastStorageEventAt: 0,
+            writeTimestamps: [],
+            storageEventTimestamps: []
+        },
+        network: {
+            fetchRequests: 0,
+            xhrRequests: 0,
+            beaconRequests: 0,
+            websocketConnections: 0,
+            crossOriginRequests: 0,
+            requestsAfterStorageEvent: 0,
+            encodedPayloadRequests: 0,
+            totalBodyBytes: 0,
+            requestTimestamps: []
+        },
+        activity: {
+            fastTimeoutRegistrations: 0,
+            fastIntervalRegistrations: 0,
+            beforeUnloadListeners: 0,
+            unloadListeners: 0,
+            pagehideListeners: 0,
+            visibilityListeners: 0,
+            storageListeners: 0,
+            historyWrites: 0,
+            mutationBatches: 0,
+            addedNodes: 0,
+            removedNodes: 0,
+            attributeMutations: 0,
+            hiddenStorageOps: 0,
+            hiddenNetworkRequests: 0,
+            hiddenMutationBursts: 0
+        },
+        probeErrors: 0
+    };
+}
+
+function setupRuntimeMonitoring() {
+    window.addEventListener('message', handleProbeMessage, false);
+    startDomMutationObserver();
+    injectPageProbe();
+}
+
+function injectPageProbe() {
+    try {
+        const script = document.createElement('script');
+        script.src = chrome.runtime.getURL('page-probe.js');
+        script.async = false;
+        script.onload = () => script.remove();
+        script.onerror = () => {
+            runtimeSignals.probeErrors += 1;
+        };
+        (document.head || document.documentElement).appendChild(script);
+    } catch {
+        runtimeSignals.probeErrors += 1;
+    }
+}
+
+function startDomMutationObserver() {
+    const root = document.documentElement;
+    if (!root || !window.MutationObserver) return;
+
+    const observer = new MutationObserver((mutations) => {
+        runtimeSignals.activity.mutationBatches += mutations.length;
+
+        for (const mutation of mutations) {
+            if (mutation.type === 'childList') {
+                runtimeSignals.activity.addedNodes += mutation.addedNodes.length;
+                runtimeSignals.activity.removedNodes += mutation.removedNodes.length;
+            } else if (mutation.type === 'attributes') {
+                runtimeSignals.activity.attributeMutations += 1;
+            }
+        }
+
+        if (document.hidden) {
+            runtimeSignals.activity.hiddenMutationBursts += mutations.length;
+        }
+    });
+
+    observer.observe(root, {
+        subtree: true,
+        childList: true,
+        attributes: true
+    });
+}
+
+function handleProbeMessage(event) {
+    if (event.source !== window || !event.data || event.data.source !== 'lse_probe') return;
+
+    const { type, payload = {}, ts } = event.data;
+    const timestamp = Number(ts) || Date.now();
+
+    switch (type) {
+        case 'probe_ready':
+            runtimeSignals.probeReady = true;
+            break;
+        case 'probe_error':
+            runtimeSignals.probeErrors += 1;
+            break;
+        case 'storage':
+            applyStorageSignal(payload, timestamp);
+            break;
+        case 'network_fetch':
+        case 'network_xhr':
+        case 'network_beacon':
+        case 'network_ws':
+            applyNetworkSignal(type, payload, timestamp);
+            break;
+        case 'timer':
+            applyTimerSignal(payload);
+            break;
+        case 'listener':
+            applyListenerSignal(payload);
+            break;
+        case 'history':
+            runtimeSignals.activity.historyWrites += 1;
+            break;
+        default:
+            break;
+    }
+}
+
+function applyStorageSignal(payload, timestamp) {
+    const area = payload.area === 'session' ? 'session' : 'local';
+    const op = payload.op;
+    const key = payload.key === undefined || payload.key === null ? '' : String(payload.key);
+    const keyBucket = op === 'clear' ? null : getKeyBucket(key, area);
+
+    if (op === 'getItem') {
+        if (area === 'local') runtimeSignals.storage.localReads += 1;
+        else runtimeSignals.storage.sessionReads += 1;
+        if (keyBucket) keyBucket.reads += 1;
+    }
+
+    if (op === 'setItem') {
+        if (area === 'local') runtimeSignals.storage.localWrites += 1;
+        else runtimeSignals.storage.sessionWrites += 1;
+
+        if (keyBucket) {
+            keyBucket.writes += 1;
+            keyBucket.lastValueLength = Number(payload.valueLength) || 0;
+            keyBucket.lastEntropy = Number(payload.entropy) || 0;
+            keyBucket.encodedLike = Boolean(payload.encodedLike);
+
+            if (keyBucket.sensitive) runtimeSignals.storage.sensitiveKeyWrites += 1;
+            if (keyBucket.lastValueLength >= LARGE_VALUE_THRESHOLD) runtimeSignals.storage.largeValueWrites += 1;
+            if (keyBucket.lastEntropy >= 4.3 && keyBucket.lastValueLength >= 64) runtimeSignals.storage.highEntropyWrites += 1;
+            if (keyBucket.encodedLike) runtimeSignals.storage.encodedLikeWrites += 1;
+        }
+
+        runtimeSignals.storage.writeTimestamps.push(timestamp);
+        trimOldTimestamps(runtimeSignals.storage.writeTimestamps, timestamp, 12000);
+    }
+
+    if (op === 'removeItem') {
+        if (area === 'local') runtimeSignals.storage.localRemoves += 1;
+        else runtimeSignals.storage.sessionRemoves += 1;
+        if (keyBucket) keyBucket.removes += 1;
+    }
+
+    if (op === 'clear') {
+        if (area === 'local') runtimeSignals.storage.localClears += 1;
+        else runtimeSignals.storage.sessionClears += 1;
+    }
+
+    runtimeSignals.storage.lastStorageEventAt = timestamp;
+    runtimeSignals.storage.storageEventTimestamps.push(timestamp);
+    trimOldTimestamps(runtimeSignals.storage.storageEventTimestamps, timestamp, 12000);
+
+    if (document.hidden) runtimeSignals.activity.hiddenStorageOps += 1;
+}
+
+function applyNetworkSignal(type, payload, timestamp) {
+    if (type === 'network_fetch') runtimeSignals.network.fetchRequests += 1;
+    if (type === 'network_xhr') runtimeSignals.network.xhrRequests += 1;
+    if (type === 'network_beacon') runtimeSignals.network.beaconRequests += 1;
+    if (type === 'network_ws') runtimeSignals.network.websocketConnections += 1;
+
+    const crossOrigin = Boolean(payload.crossOrigin);
+    if (crossOrigin) runtimeSignals.network.crossOriginRequests += 1;
+
+    const bodyBytes = Number(payload.bodyBytes) || 0;
+    runtimeSignals.network.totalBodyBytes += Math.max(0, bodyBytes);
+
+    if (Boolean(payload.encodedPayload)) {
+        runtimeSignals.network.encodedPayloadRequests += 1;
+    }
+
+    const lastStorageAt = runtimeSignals.storage.lastStorageEventAt || 0;
+    if (lastStorageAt > 0 && timestamp - lastStorageAt <= CORRELATION_WINDOW_MS) {
+        runtimeSignals.network.requestsAfterStorageEvent += 1;
+    }
+
+    runtimeSignals.network.requestTimestamps.push(timestamp);
+    trimOldTimestamps(runtimeSignals.network.requestTimestamps, timestamp, 12000);
+
+    if (document.hidden) runtimeSignals.activity.hiddenNetworkRequests += 1;
+}
+
+function applyTimerSignal(payload) {
+    const kind = String(payload.kind || '');
+    const delay = Number(payload.delay) || 0;
+
+    if (kind === 'timeout' && delay > 0 && delay <= 600) {
+        runtimeSignals.activity.fastTimeoutRegistrations += 1;
+    }
+
+    if (kind === 'interval' && delay > 0 && delay <= 1500) {
+        runtimeSignals.activity.fastIntervalRegistrations += 1;
+    }
+}
+
+function applyListenerSignal(payload) {
+    const eventName = String(payload.event || '').toLowerCase();
+
+    if (eventName === 'beforeunload') runtimeSignals.activity.beforeUnloadListeners += 1;
+    if (eventName === 'unload') runtimeSignals.activity.unloadListeners += 1;
+    if (eventName === 'pagehide') runtimeSignals.activity.pagehideListeners += 1;
+    if (eventName === 'visibilitychange') runtimeSignals.activity.visibilityListeners += 1;
+    if (eventName === 'storage') runtimeSignals.activity.storageListeners += 1;
+}
+
+function getKeyBucket(key, area) {
+    const safeKey = key || '[empty]';
+    if (!runtimeSignals.storage.keyStats[safeKey]) {
+        runtimeSignals.storage.keyStats[safeKey] = {
+            area,
+            reads: 0,
+            writes: 0,
+            removes: 0,
+            lastValueLength: 0,
+            lastEntropy: 0,
+            encodedLike: false,
+            sensitive: SENSITIVE_KEY_PATTERN.test(safeKey)
+        };
+    }
+    return runtimeSignals.storage.keyStats[safeKey];
+}
+
+function trimOldTimestamps(list, now, windowMs) {
+    while (list.length > 0 && now - list[0] > windowMs) {
+        list.shift();
+    }
+}
+
+function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+}
+
+function estimateEntropy(input) {
+    const text = input === undefined || input === null ? '' : String(input);
+    if (text.length < 16) return 0;
+
+    const sample = text.length > 2048 ? text.slice(0, 2048) : text;
+    const counts = Object.create(null);
+    for (const ch of sample) {
+        counts[ch] = (counts[ch] || 0) + 1;
+    }
+
+    let entropy = 0;
+    const len = sample.length;
+    for (const count of Object.values(counts)) {
+        const p = count / len;
+        entropy -= p * Math.log2(p);
+    }
+    return entropy;
+}
+
+function maxEventsInWindow(timestamps, windowMs) {
+    if (!timestamps.length) return 0;
+
+    let left = 0;
+    let best = 0;
+    for (let right = 0; right < timestamps.length; right++) {
+        while (timestamps[right] - timestamps[left] > windowMs) {
+            left += 1;
+        }
+        best = Math.max(best, right - left + 1);
+    }
+    return best;
+}
+
+function collectStorageSnapshot(storageObj, area) {
+    const snapshot = {
+        area,
+        keyCount: 0,
+        totalBytes: 0,
+        sensitiveKeys: 0,
+        largeValues: 0,
+        highEntropyValues: 0
+    };
+
+    try {
+        for (let i = 0; i < storageObj.length; i++) {
+            const key = storageObj.key(i);
+            if (key === null) continue;
+
+            const value = storageObj.getItem(key) || '';
+            const valueLength = value.length;
+
+            snapshot.keyCount += 1;
+            snapshot.totalBytes += valueLength;
+
+            if (SENSITIVE_KEY_PATTERN.test(key)) snapshot.sensitiveKeys += 1;
+            if (valueLength >= LARGE_VALUE_THRESHOLD) snapshot.largeValues += 1;
+            if (valueLength >= 64 && estimateEntropy(value) >= 4.3) {
+                snapshot.highEntropyValues += 1;
+            }
+        }
+    } catch {
+        runtimeSignals.probeErrors += 1;
+    }
+
+    return snapshot;
+}
+
+async function waitForObservationWindow(minMs) {
+    const elapsed = Date.now() - runtimeSignals.startedAt;
+    if (elapsed >= minMs) return;
+
+    await new Promise(resolve => setTimeout(resolve, minMs - elapsed));
+}
+
 async function isProtectionEnabled() {
     const { settings = {} } = await chrome.storage.sync.get('settings');
     return settings.protectionEnabled !== false;
@@ -82,100 +430,225 @@ async function decryptValue(encryptedBase64) {
     }
 }
 
-function analyze() {
-    let score = 0;
-    const issues = [];
+async function analyze() {
+    await waitForObservationWindow(MIN_OBSERVATION_MS);
 
-    const inlineScripts = document.querySelectorAll('script:not([src])');
-    const inlineCount = inlineScripts.length;
-    if (inlineCount > 5) {
-        score += 25;
-        issues.push(`Много подозрительных скриптов: ${inlineCount}`);
-    } else if (inlineCount > 0) {
-        score += 15;
-    }
+    const localSnapshot = collectStorageSnapshot(localStorage, 'local');
+    const sessionSnapshot = collectStorageSnapshot(sessionStorage, 'session');
 
-    const dangerousEvents = ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'onchange'];
-    let eventCount = 0;
-    dangerousEvents.forEach(attr => {
-        eventCount += document.querySelectorAll(`[${attr}]`).length;
-    });
-    if (eventCount > 10) {
-        score += 30;
-        issues.push(`Много обработчиков событий: ${eventCount}`);
-    } else if (eventCount > 3) {
-        score += 10;
-    }
+    const storageOps = runtimeSignals.storage;
+    const networkOps = runtimeSignals.network;
+    const activityOps = runtimeSignals.activity;
 
-    const scripts = document.querySelectorAll('script');
-    const dangerousPatterns = [/eval\s*\(/gi, /innerHTML\s*=/gi, /document\.write/gi];
-    let dangerousCount = 0;
-    scripts.forEach(script => {
-        const code = (script.textContent || '').toLowerCase();
-        dangerousPatterns.forEach(pattern => {
-            const matches = code.match(pattern);
-            if (matches) dangerousCount += matches.length;
-        });
-    });
-    if (dangerousCount > 3) {
-        score += 30;
-        issues.push(`Опасные функции: ${dangerousCount}`);
-    } else if (dangerousCount > 0) {
-        score += 15;
-    }
+    const observationMs = Date.now() - runtimeSignals.startedAt;
+    const observationSec = Math.max(1, observationMs / 1000);
 
-    const forms = Array.from(document.forms);
-    for (const form of forms) {
-        const action = (form.action || '').toLowerCase();
-        if (action.includes('javascript:') || action.includes('vbscript:')) {
-            score += 30;
-            issues.push('JS в action формы');
-        }
-        if (!form.action || form.action === '#') {
-            score += 10;
-        }
-    }
+    const writes = storageOps.localWrites + storageOps.sessionWrites;
+    const reads = storageOps.localReads + storageOps.sessionReads;
+    const removes = storageOps.localRemoves + storageOps.sessionRemoves;
+    const clears = storageOps.localClears + storageOps.sessionClears;
+    const destructiveOps = removes + clears * 3;
 
-    const externalScripts = document.querySelectorAll('script[src]');
-    const badDomains = ['.xyz', '.tk', 'pastebin', 'rawgit'];
-    let suspiciousScripts = 0;
-    let httpScripts = 0;
-    externalScripts.forEach(script => {
-        const src = script.src.toLowerCase();
-        if (window.location.protocol === 'https:' && src.startsWith('http:')) {
-            httpScripts++;
-            score += 15;
-        }
-        if (badDomains.some(domain => src.includes(domain))) {
-            score += 30;
-            suspiciousScripts++;
-        }
-    });
-    if (suspiciousScripts > 0) issues.push(`Подозрительные скрипты: ${suspiciousScripts}`);
-    if (httpScripts > 0) issues.push(`HTTP на HTTPS странице: ${httpScripts}`);
+    const totalRequests =
+        networkOps.fetchRequests +
+        networkOps.xhrRequests +
+        networkOps.beaconRequests +
+        networkOps.websocketConnections;
 
-    const iframes = document.querySelectorAll('iframe:not([sandbox])');
-    if (iframes.length > 3) {
-        score += 30;
-        issues.push(`Много iframe без sandbox: ${iframes.length}`);
-    } else if (iframes.length > 0) {
-        score += 10;
-    }
+    const keyStatsEntries = Object.entries(storageOps.keyStats);
+    const keyStatsValues = keyStatsEntries.map(([, value]) => value);
+    const churnedKeys = keyStatsValues.filter(k => k.writes >= 3).length;
+    const sensitiveTouchedKeys = keyStatsValues.filter(k => k.sensitive).length;
+
+    const writeBurst1s = maxEventsInWindow(storageOps.writeTimestamps, 1000);
+    const networkBurst1s = maxEventsInWindow(networkOps.requestTimestamps, 1000);
+
+    const mutationVolume =
+        activityOps.mutationBatches +
+        activityOps.addedNodes +
+        activityOps.removedNodes +
+        activityOps.attributeMutations;
+
+    const mutationRatePerSec = mutationVolume / observationSec;
+
+    const storageParts = {
+        writeIntensity: Math.min(14, Math.round(writes * 1.2)),
+        readIntensity: Math.min(6, Math.round(reads * 0.35)),
+        sensitiveUsage: Math.min(10, storageOps.sensitiveKeyWrites * 2 + localSnapshot.sensitiveKeys),
+        destructiveOps: Math.min(8, destructiveOps * 2),
+        payloadRisk: Math.min(
+            9,
+            storageOps.largeValueWrites * 2 +
+            storageOps.highEntropyWrites * 2 +
+            storageOps.encodedLikeWrites +
+            localSnapshot.largeValues +
+            sessionSnapshot.largeValues
+        ),
+        burstRisk: Math.min(7, Math.max(0, writeBurst1s - 2) * 2),
+        churnRisk: Math.min(7, churnedKeys * 2),
+        footprintRisk: Math.min(5, Math.round((localSnapshot.keyCount + sessionSnapshot.keyCount) / 6))
+    };
+
+    const networkParts = {
+        requestIntensity: Math.min(8, Math.round(totalRequests * 0.8)),
+        crossOriginRisk: Math.min(10, networkOps.crossOriginRequests * 2),
+        storageCorrelationRisk: Math.min(10, networkOps.requestsAfterStorageEvent * 2),
+        outboundDataRisk: Math.min(4, Math.round(networkOps.totalBodyBytes / 8192)),
+        encodedPayloadRisk: Math.min(5, networkOps.encodedPayloadRequests * 2),
+        beaconAndWsRisk: Math.min(6, networkOps.beaconRequests * 2 + networkOps.websocketConnections * 3)
+    };
+
+    const activityParts = {
+        fastTimers: Math.min(6, activityOps.fastTimeoutRegistrations + activityOps.fastIntervalRegistrations),
+        lifecycleHooks: Math.min(
+            5,
+            activityOps.beforeUnloadListeners * 3 +
+            activityOps.unloadListeners * 2 +
+            activityOps.pagehideListeners * 2
+        ),
+        hiddenActivity: Math.min(
+            6,
+            activityOps.hiddenStorageOps * 2 +
+            activityOps.hiddenNetworkRequests * 2 +
+            Math.round(activityOps.hiddenMutationBursts / 10)
+        ),
+        domVolatility: Math.min(4, Math.round(mutationRatePerSec / 25)),
+        historyRewrites: Math.min(3, activityOps.historyWrites * 2),
+        visibilityHooks: Math.min(2, activityOps.visibilityListeners)
+    };
+
+    const storageScore = clamp(Object.values(storageParts).reduce((sum, n) => sum + n, 0), 0, 45);
+    const networkScore = clamp(Object.values(networkParts).reduce((sum, n) => sum + n, 0), 0, 35);
+    const activityScore = clamp(Object.values(activityParts).reduce((sum, n) => sum + n, 0), 0, 20);
+
+    const totalScore = clamp(storageScore + networkScore + activityScore, 0, 100);
 
     let risk = 'low';
-    if (score >= 70) risk = 'high';
-    else if (score >= 35) risk = 'medium';
+    if (totalScore >= 70) risk = 'high';
+    else if (totalScore >= 35) risk = 'medium';
+
+    const issues = [];
+
+    if (storageScore >= 22) {
+        issues.push(
+            `Интенсивная работа с хранилищем: ${writes} записей, ${reads} чтений, ${destructiveOps} деструктивных операций.`
+        );
+    }
+
+    if (storageOps.sensitiveKeyWrites > 0 || localSnapshot.sensitiveKeys > 0) {
+        issues.push(
+            `Работа с чувствительными ключами: записей=${storageOps.sensitiveKeyWrites}, ключей в localStorage=${localSnapshot.sensitiveKeys}.`
+        );
+    }
+
+    if (writeBurst1s >= 4) {
+        issues.push(`Всплеск записи в storage: до ${writeBurst1s} операций/сек.`);
+    }
+
+    if (networkScore >= 16) {
+        issues.push(
+            `Сетевая активность после storage-событий: ${networkOps.requestsAfterStorageEvent} запросов, cross-origin=${networkOps.crossOriginRequests}.`
+        );
+    }
+
+    if (networkOps.encodedPayloadRequests > 0 || storageOps.encodedLikeWrites > 0) {
+        issues.push(
+            `Обнаружены похожие на закодированные данные полезные нагрузки: storage=${storageOps.encodedLikeWrites}, network=${networkOps.encodedPayloadRequests}.`
+        );
+    }
+
+    if (activityScore >= 10) {
+        issues.push(
+            `Высокая автоматизированная активность страницы: таймеры=${activityOps.fastTimeoutRegistrations + activityOps.fastIntervalRegistrations}, hidden-операции=${activityOps.hiddenStorageOps + activityOps.hiddenNetworkRequests}.`
+        );
+    }
+
+    if (clears > 0) {
+        issues.push(`Были вызовы полной очистки storage: ${clears}.`);
+    }
+
+    const topChurnKeys = keyStatsEntries
+        .filter(([, value]) => value.writes > 0)
+        .sort((a, b) => b[1].writes - a[1].writes)
+        .slice(0, 5)
+        .map(([key, value]) => ({
+            key,
+            area: value.area,
+            writes: value.writes,
+            reads: value.reads,
+            sensitive: value.sensitive,
+            lastValueLength: value.lastValueLength
+        }));
 
     return {
-        score: Math.min(score, 100),
+        score: totalScore,
         risk,
-        issues: issues.slice(0, 5),
+        issues: issues.slice(0, 8),
         details: {
-            inlineCount,
-            eventCount,
-            dangerousCount,
-            suspiciousScripts,
-            iframes: iframes.length
+            version: 'behavioral-v2',
+            observationMs,
+            probeReady: runtimeSignals.probeReady,
+            probeErrors: runtimeSignals.probeErrors,
+            components: {
+                storage: { score: storageScore, parts: storageParts },
+                network: { score: networkScore, parts: networkParts },
+                activity: { score: activityScore, parts: activityParts }
+            },
+            metrics: {
+                storage: {
+                    localReads: storageOps.localReads,
+                    localWrites: storageOps.localWrites,
+                    localRemoves: storageOps.localRemoves,
+                    localClears: storageOps.localClears,
+                    sessionReads: storageOps.sessionReads,
+                    sessionWrites: storageOps.sessionWrites,
+                    sessionRemoves: storageOps.sessionRemoves,
+                    sessionClears: storageOps.sessionClears,
+                    sensitiveKeyWrites: storageOps.sensitiveKeyWrites,
+                    highEntropyWrites: storageOps.highEntropyWrites,
+                    largeValueWrites: storageOps.largeValueWrites,
+                    encodedLikeWrites: storageOps.encodedLikeWrites,
+                    keyCountTouched: keyStatsValues.length,
+                    sensitiveTouchedKeys,
+                    churnedKeys,
+                    writeBurst1s
+                },
+                network: {
+                    totalRequests,
+                    fetchRequests: networkOps.fetchRequests,
+                    xhrRequests: networkOps.xhrRequests,
+                    beaconRequests: networkOps.beaconRequests,
+                    websocketConnections: networkOps.websocketConnections,
+                    crossOriginRequests: networkOps.crossOriginRequests,
+                    requestsAfterStorageEvent: networkOps.requestsAfterStorageEvent,
+                    encodedPayloadRequests: networkOps.encodedPayloadRequests,
+                    totalBodyBytes: networkOps.totalBodyBytes,
+                    networkBurst1s
+                },
+                activity: {
+                    fastTimeoutRegistrations: activityOps.fastTimeoutRegistrations,
+                    fastIntervalRegistrations: activityOps.fastIntervalRegistrations,
+                    beforeUnloadListeners: activityOps.beforeUnloadListeners,
+                    unloadListeners: activityOps.unloadListeners,
+                    pagehideListeners: activityOps.pagehideListeners,
+                    visibilityListeners: activityOps.visibilityListeners,
+                    storageListeners: activityOps.storageListeners,
+                    historyWrites: activityOps.historyWrites,
+                    mutationBatches: activityOps.mutationBatches,
+                    addedNodes: activityOps.addedNodes,
+                    removedNodes: activityOps.removedNodes,
+                    attributeMutations: activityOps.attributeMutations,
+                    hiddenStorageOps: activityOps.hiddenStorageOps,
+                    hiddenNetworkRequests: activityOps.hiddenNetworkRequests,
+                    hiddenMutationBursts: activityOps.hiddenMutationBursts,
+                    mutationRatePerSec: Number(mutationRatePerSec.toFixed(2))
+                },
+                storageSnapshot: {
+                    local: localSnapshot,
+                    session: sessionSnapshot
+                }
+            },
+            hotKeys: topChurnKeys
         }
     };
 }
@@ -192,7 +665,8 @@ async function safeEncryptAll() {
         if (key && !key.startsWith('encrypted_')) keys.push(key);
     }
 
-    let count = 0, skipped = 0;
+    let count = 0;
+    let skipped = 0;
     for (const key of keys) {
         try {
             const value = localStorage.getItem(key);
@@ -320,7 +794,7 @@ if (chrome.runtime?.sendMessage) {
             }
 
             await logToExtension(`Старт локального анализа для ${window.location.origin}`, 'info');
-            const analysis = analyze();
+            const analysis = await analyze();
             await logToExtension(
                 `Результат локального анализа ${window.location.origin}: угроза - ${analysis.risk}, счет - ${analysis.score}`,
                 'info'
@@ -350,7 +824,7 @@ if (chrome.runtime?.sendMessage) {
                     ...analysis
                 });
                 await logToExtension(
-                    `Локальный режим анализа, запускаю авто-шифрование`,
+                    'Локальный режим анализа, запускаю авто-шифрование',
                     'auto_encrypt'
                 );
                 const result = await safeEncryptAll();
@@ -368,7 +842,7 @@ if (chrome.runtime?.sendMessage) {
             }
 
             await logToExtension(
-                `Полный режим анализа: отправляю запрос на полный анализ`,
+                'Полный режим анализа: отправляю запрос на полный анализ',
                 'info'
             );
             const full = await requestFullAnalysis(analysis);
