@@ -48,7 +48,7 @@ body {
 
 button {
   height: 38px;
-  border: 1px solid var(--border);
+  border: 2px solid var(--border);
   background: #ffffff;
   color: var(--text);
   font: inherit;
