@@ -1,10 +1,8 @@
-const REFRESH_INTERVAL_MS = 5000;
 const FEEDBACK_TIMEOUT_MS = 2600;
 const VISIBLE_LOGS_LIMIT = 50;
 const ALLOWED_LOG_TYPES = new Set(['error', 'warn', 'info', 'system', 'auto_encrypt']);
 
 const dom = {};
-let refreshTimer = null;
 let feedbackTimer = null;
 let saveButtonTimer = null;
 
@@ -13,11 +11,9 @@ document.addEventListener('DOMContentLoaded', init);
 async function init() {
   cacheDom();
   bindEvents();
+  bindStorageTriggers();
 
   await initialLoad();
-
-  refreshTimer = window.setInterval(refreshDynamicData, REFRESH_INTERVAL_MS);
-  window.addEventListener('beforeunload', stopRefresh, { once: true });
 }
 
 function cacheDom() {
@@ -61,10 +57,43 @@ function bindEvents() {
   dom.protectionToggle.addEventListener('click', toggleProtection);
 }
 
-function stopRefresh() {
-  if (!refreshTimer) return;
-  window.clearInterval(refreshTimer);
-  refreshTimer = null;
+function bindStorageTriggers() {
+  chrome.storage.onChanged.addListener(onStorageChanged);
+  window.addEventListener('beforeunload', unbindStorageTriggers, { once: true });
+}
+
+function unbindStorageTriggers() {
+  if (chrome.storage.onChanged.hasListener(onStorageChanged)) {
+    chrome.storage.onChanged.removeListener(onStorageChanged);
+  }
+}
+
+function onStorageChanged(changes, areaName) {
+  void refreshByStorageChange(changes, areaName);
+}
+
+async function refreshByStorageChange(changes, areaName) {
+  try {
+    if (areaName === 'sync' && changes.monitoredSites) {
+      await Promise.all([loadSites(), loadStats()]);
+      return;
+    }
+
+    if (areaName === 'sync' && changes.settings) {
+      await Promise.all([loadSettings(), loadLogs()]);
+      return;
+    }
+
+    if (areaName === 'local' && changes.logs) {
+      await loadLogs();
+    }
+
+    if (areaName === 'local' && changes.stats) {
+      await loadStats();
+    }
+  } catch (error) {
+    console.error('Ошибка обновления по storage-триггеру:', error);
+  }
 }
 
 async function initialLoad() {
@@ -73,14 +102,6 @@ async function initialLoad() {
   } catch (error) {
     console.error('Ошибка начальной загрузки данных options:', error);
     showSiteFeedback('Не удалось загрузить данные страницы.', 'error');
-  }
-}
-
-async function refreshDynamicData() {
-  try {
-    await Promise.all([loadSites(), loadStats(), loadLogs()]);
-  } catch (error) {
-    console.error('Ошибка периодического обновления options:', error);
   }
 }
 
@@ -124,29 +145,52 @@ async function loadSites() {
 
 function createSiteRow(site) {
   const riskBadge = getRiskBadge(site.risk || 'low');
+  const score = getNumericScore(site.score);
+  const aiDanger = normalizeAiDanger(site.aiDanger);
 
   const row = document.createElement('div');
   row.className = 'site-row';
   row.dataset.site = site.url;
 
+  const info = document.createElement('div');
+  info.className = 'site-info';
+
   const siteUrl = document.createElement('span');
   siteUrl.className = 'site-url';
   siteUrl.textContent = site.url;
+
+  const meta = document.createElement('div');
+  meta.className = 'site-meta';
+
+  const heuristicMeta = document.createElement('span');
+  heuristicMeta.className = 'site-meta-item';
+  heuristicMeta.textContent = Number.isFinite(score)
+    ? `Эвристика: ${riskBadge.text} (${score}/100)`
+    : `Эвристика: ${riskBadge.text} (нет данных)`;
+  meta.appendChild(heuristicMeta);
+
+  if (aiDanger) {
+    const aiMeta = document.createElement('span');
+    aiMeta.className = 'site-meta-item site-meta-ai';
+    aiMeta.textContent = `ИИ: ${aiDanger}`;
+    meta.appendChild(aiMeta);
+  }
 
   const actions = document.createElement('span');
   actions.className = 'site-actions';
 
   const badge = document.createElement('span');
   badge.className = `badge ${riskBadge.className}`;
-  badge.textContent = riskBadge.text;
+  badge.textContent = `Риск: ${riskBadge.text}`;
 
   const removeBtn = document.createElement('button');
   removeBtn.type = 'button';
   removeBtn.className = 'danger remove-site-btn';
   removeBtn.textContent = 'Удалить';
 
+  info.append(siteUrl, meta);
   actions.append(badge, removeBtn);
-  row.append(siteUrl, actions);
+  row.append(info, actions);
 
   return row;
 }
@@ -214,6 +258,16 @@ async function toggleProtection() {
 }
 
 async function loadLogs() {
+  const { settings = {} } = await chrome.storage.sync.get('settings');
+  const loggingEnabled = settings.logging !== false;
+
+  if (!loggingEnabled) {
+    dom.logsList.replaceChildren();
+    dom.clearLogsBtn.disabled = true;
+    appendEmptyState(dom.logsList, 'Логирование отключено в настройках.');
+    return;
+  }
+
   const { logs = [] } = await chrome.storage.local.get('logs');
   dom.logsList.replaceChildren();
 
@@ -283,7 +337,7 @@ async function addSite() {
 
   safeSites.push({ url: normalizedUrl, risk: 'low', added: Date.now() });
   await chrome.storage.sync.set({ monitoredSites: safeSites });
-  await syncSitesCount(safeSites.length);
+  await syncStatsBySites(safeSites);
 
   dom.siteInput.value = '';
   dom.siteInput.classList.remove('is-invalid');
@@ -300,7 +354,7 @@ async function removeSite(url) {
   if (filtered.length === safeSites.length) return;
 
   await chrome.storage.sync.set({ monitoredSites: filtered });
-  await syncSitesCount(filtered.length);
+  await syncStatsBySites(filtered);
   showSiteFeedback('Сайт удалён из списка.', 'success');
 
   await Promise.all([loadSites(), loadStats()]);
@@ -364,6 +418,24 @@ function getRiskBadge(risk) {
   }
 }
 
+function getNumericScore(score) {
+  const value = Number(score);
+  if (!Number.isFinite(value)) return null;
+  return clamp(Math.round(value), 0, 100);
+}
+
+function normalizeAiDanger(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return '';
+
+  if (raw === 'high' || raw === 'высокий') return 'высокий';
+  if (raw === 'medium' || raw === 'средний') return 'средний';
+  if (raw === 'low' || raw === 'низкий') return 'низкий';
+  if (raw === 'critical' || raw === 'критический') return 'критический';
+
+  return raw;
+}
+
 function getRiskByIndex(index) {
   if (index < 40) {
     return { key: 'critical', text: 'критический' };
@@ -416,15 +488,43 @@ function appendEmptyState(container, text) {
   container.appendChild(empty);
 }
 
-async function syncSitesCount(sitesCount) {
+async function syncStatsBySites(sites) {
+  const safeSites = Array.isArray(sites)
+    ? sites.filter((site) => site && typeof site.url === 'string' && site.url.trim())
+    : [];
+  const sitesCount = safeSites.length;
   const { stats = {} } = await chrome.storage.local.get('stats');
   const nextStats = { ...stats, sitesCount };
 
   if (sitesCount === 0) {
     nextStats.securityIndex = 100;
+  } else {
+    const avgScore =
+      safeSites.reduce((sum, site) => sum + getSiteScore(site), 0) / sitesCount;
+    nextStats.securityIndex = Math.max(0, Math.round(100 - Math.min(avgScore, 100)));
   }
 
   await chrome.storage.local.set({ stats: nextStats });
+}
+
+function getSiteScore(site) {
+  if (!site || typeof site !== 'object') return 0;
+
+  const numericScore = Number(site.score);
+  if (Number.isFinite(numericScore)) {
+    return clamp(Math.round(numericScore), 0, 100);
+  }
+
+  switch (String(site.risk || '').toLowerCase()) {
+    case 'critical':
+      return 90;
+    case 'high':
+      return 70;
+    case 'medium':
+      return 40;
+    default:
+      return 0;
+  }
 }
 
 function showSiteFeedback(text, type = 'info') {

@@ -19,6 +19,15 @@
     <button id="optionsBtn" type="button">Настройки</button>
   </main>
 
+  <section class="key-panel" data-animate>
+    <label for="encryptionKeyInput">Ключ шифрования</label>
+    <div class="key-row">
+      <input id="encryptionKeyInput" type="password" placeholder="Введите ключ">
+      <button id="saveKeyBtn" type="button">Сохранить ключ</button>
+    </div>
+    <p id="keyStatus" class="key-status"></p>
+  </section>
+
   <div id="status" class="status" role="status" aria-live="polite"></div>
 
   <script src="popup.js"></script>

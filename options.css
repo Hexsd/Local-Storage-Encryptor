@@ -263,7 +263,7 @@ button.danger:hover {
 
 .site-row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
   padding: 10px 12px;
@@ -276,12 +276,39 @@ button.danger:hover {
   border-bottom: none;
 }
 
-.site-url {
+.site-info {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.site-url {
+  display: block;
+  font-weight: 500;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.site-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.site-meta-item {
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  background: #faf9ff;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.site-meta-ai {
+  border-color: #d7cef7;
+  color: var(--accent);
 }
 
 .site-actions {
@@ -292,7 +319,6 @@ button.danger:hover {
 
 .badge {
   padding: 2px 8px;
-  border-radius: 999px;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -312,6 +338,33 @@ button.danger:hover {
 .badge-risk {
   background: #fdeeee;
   color: var(--risk);
+}
+
+.risk-guide {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  background: #faf9ff;
+}
+
+.risk-guide-title {
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.risk-guide-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.risk-guide-row + .risk-guide-row {
+  margin-top: 6px;
 }
 
 .stat-item {
@@ -443,7 +496,6 @@ button.danger:hover {
   display: inline-block;
   margin-right: 8px;
   padding: 2px 7px;
-  border-radius: 999px;
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -583,6 +635,15 @@ button.danger:hover {
 
   .input-group {
     flex-direction: column;
+  }
+
+  .site-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .site-actions {
+    justify-content: flex-start;
   }
 
   .settings-row select {

@@ -1,25 +1,50 @@
-const std = 'http://127.0.0.1:1234/v1/chat/completions';
-const model = 'gpt-4o-mini';
+const LM_STUDIO_ENDPOINT = 'http://127.0.0.1:1234/v1/chat/completions';
+const LM_STUDIO_MODEL = 'gpt-4o-mini';
+const LM_STUDIO_TIMEOUT_MS = 15000;
+
+async function getExtensionSettings() {
+  try {
+    const { settings = {} } = await chrome.storage.sync.get('settings');
+    return {
+      notifications: settings.notifications !== false,
+      logging: settings.logging !== false,
+      mode: settings.mode || 'hybrid'
+    };
+  } catch {
+    return {
+      notifications: true,
+      logging: true,
+      mode: 'hybrid'
+    };
+  }
+}
+
+async function showNotification(message) {
+  const { notifications } = await getExtensionSettings();
+  if (!notifications) return;
+
+  chrome.notifications.create({
+    type: 'basic',
+    iconUrl: 'icons/128.png',
+    title: 'Local Storage Encryptor',
+    message: message || 'Обнаружен потенциальный риск!'
+  });
+}
 
 chrome.runtime.onInstalled.addListener(() => {
-  logEvent('Расширение установлено', 'system');
+  void logEvent('Расширение установлено', 'system');
 });
 
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   try {
     if (request.action === 'show_notification') {
-      chrome.notifications.create({
-        type: 'basic',
-        iconUrl: 'icons/128.png',
-        title: 'Local Storage Encryptor',
-        message: request.message || 'Обнаружен потенциальный риск!'
-      });
+      void showNotification(request.message);
     }
 
     if (request.action === 'page_analyzed') {
       handlePageAnalysis(request)
-        .catch(e => logEvent(`Анализ страницы: ${e.message}`, 'error'));
+        .catch(e => void logEvent(`Анализ страницы: ${e.message}`, 'error'));
     }
 
     if (request.action === 'page_analyzed_full') {
@@ -28,15 +53,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     if (request.action === 'log_event') {
-      logEvent(request.message, request.type);
+      void logEvent(request.message, request.type);
     }
   } catch (e) {
-    logEvent(`Background ошибка: ${e.message}`, 'error');
+    void logEvent(`Background ошибка: ${e.message}`, 'error');
   }
 });
 
 async function logEvent(message, type = 'info') {
   try {
+    const { logging } = await getExtensionSettings();
+    if (!logging) return;
+
     const { logs = [] } = await chrome.storage.local.get('logs');
     logs.push({
       timestamp: Date.now(),
@@ -49,6 +77,55 @@ async function logEvent(message, type = 'info') {
   } catch (e) {
     console.error('Критическая ошибка логирования:', e);
   }
+}
+
+function extractLmText(payload) {
+  const direct = payload?.choices?.[0]?.message?.content;
+  if (typeof direct === 'string') return direct;
+  if (Array.isArray(direct)) {
+    return direct
+      .map(item => (typeof item?.text === 'string' ? item.text : ''))
+      .join('')
+      .trim();
+  }
+  return '';
+}
+
+function parseDangerLevel(text) {
+  const lower = String(text || '').toLowerCase();
+
+  if (
+    lower.includes('уровень опасности: high') ||
+    lower.includes('опасность: high') ||
+    lower.includes('danger: high') ||
+    lower.includes('risk: high') ||
+    lower.includes('высокий риск') ||
+    lower.includes('очень опасн')
+  ) {
+    return 'высокий';
+  }
+
+  if (
+    lower.includes('уровень опасности: medium') ||
+    lower.includes('опасность: medium') ||
+    lower.includes('danger: medium') ||
+    lower.includes('risk: medium') ||
+    lower.includes('средний риск')
+  ) {
+    return 'средний';
+  }
+
+  if (
+    lower.includes('уровень опасности: low') ||
+    lower.includes('опасность: low') ||
+    lower.includes('danger: low') ||
+    lower.includes('risk: low') ||
+    lower.includes('низкий риск')
+  ) {
+    return 'низкий';
+  }
+
+  return 'низкий';
 }
 
 async function askLmStudioAboutSite(data) {
@@ -71,12 +148,12 @@ async function askLmStudioAboutSite(data) {
 `;
 
   await logEvent(
-    `Отправка запроса в LM Studio для ${url}: угроза=${risk}, счет=${score}`,
+    `LM Studio запрос: endpoint=${LM_STUDIO_ENDPOINT}, model=${LM_STUDIO_MODEL}, url=${url}, риск=${risk}, счет=${score}`,
     'request'
   );
 
   const body = {
-    model: model,
+    model: LM_STUDIO_MODEL,
     messages: [
       {
         role: 'system',
@@ -88,40 +165,49 @@ async function askLmStudioAboutSite(data) {
     temperature: 0.3
   };
 
-  const response = await fetch(std, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
-  });
+  const abortController = new AbortController();
+  const timeoutId = setTimeout(() => abortController.abort(), LM_STUDIO_TIMEOUT_MS);
 
-  if (!response.ok) {
-    throw new Error(`LM Studio HTTP ${response.status}`);
+  let response;
+  try {
+    response = await fetch(LM_STUDIO_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: abortController.signal
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`LM Studio не ответил за ${LM_STUDIO_TIMEOUT_MS}мс`);
+    }
+    throw new Error(`Ошибка сети LM Studio: ${error.message}`);
+  } finally {
+    clearTimeout(timeoutId);
   }
 
-  const dataResp = await response.json();
-  const text = dataResp.choices?.[0]?.message?.content || '';
+  if (!response.ok) {
+    const errorBody = (await response.text().catch(() => '')).slice(0, 300);
+    throw new Error(`LM Studio HTTP ${response.status}${errorBody ? `: ${errorBody}` : ''}`);
+  }
+
+  let dataResp;
+  try {
+    dataResp = await response.json();
+  } catch {
+    throw new Error('LM Studio вернул не-JSON ответ');
+  }
+
+  const text = extractLmText(dataResp);
+  if (!text.trim()) {
+    throw new Error('LM Studio вернул пустой ответ');
+  }
 
   await logEvent(
     `Ответ LM Studio для ${url}: ${text.slice(0, 400)}`,
     'lm_response'
   );
 
-  const lower = text.toLowerCase();
-  let danger = 'низкий';
-
-  if (lower.includes('уровень опасности: high') || lower.includes('опасность: high')) {
-    danger = 'высокий';
-  } else if (lower.includes('уровень опасности: medium') || lower.includes('опасность: medium')) {
-    danger = 'средний';
-  } else if (lower.includes('уровень опасности: low') || lower.includes('опасность: low')) {
-    danger = 'низкий';
-  } else if (lower.includes('высокий риск') || lower.includes('очень опасн')) {
-    danger = 'высокий';
-  } else if (lower.includes('средний риск')) {
-    danger = 'средний';
-  } else if (lower.includes('низкий риск')) {
-    danger = 'низкий';
-  }
+  const danger = parseDangerLevel(text);
 
   const reason = text.slice(0, 400);
 
@@ -215,7 +301,7 @@ async function handleFullPageAnalysis(data, sender, sendResponse) {
           score,
           issues: issues || [],
           details: details || null,
-          aiDanger: 'low',
+          aiDanger: 'низкий',
           aiReason: '',
           aiRecommendation: ''
         }

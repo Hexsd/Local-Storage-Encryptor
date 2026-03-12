@@ -23,7 +23,7 @@
       <section class="card card-sites" data-animate>
         <div class="card-head">
           <h2>Отслеживаемые сайты</h2>
-          <p class="card-desc">Сайты, которые автоматически анализируются расширением.</p>
+          <p class="card-desc">Сайты, которые автоматически анализируются расширением. Риск рядом с сайтом — это эвристическая оценка его поведения.</p>
         </div>
         <div class="input-group">
           <input id="site-input" type="url" placeholder="https://example.com" aria-label="URL сайта">
@@ -31,6 +31,12 @@
         </div>
         <p id="site-feedback" class="feedback" aria-live="polite"></p>
         <div class="sites-list" id="sites-list" role="list"></div>
+        <div class="risk-guide" aria-label="Расшифровка уровней риска">
+          <p class="risk-guide-title">Уровни риска</p>
+          <p class="risk-guide-row"><span class="badge badge-ok">Низкий</span><span>0-34/100: типичное поведение</span></p>
+          <p class="risk-guide-row"><span class="badge badge-warn">Средний</span><span>35-69/100: есть подозрительные сигналы</span></p>
+          <p class="risk-guide-row"><span class="badge badge-risk">Высокий</span><span>70-100/100: выраженные риски</span></p>
+        </div>
       </section>
 
       <section class="card card-logs" data-animate>

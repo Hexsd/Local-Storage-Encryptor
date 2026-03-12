@@ -1,14 +1,46 @@
-const pwd = 'vsosh{fake_flag}';
+const ENCRYPTION_KEY_STORAGE = 'encryptionPassphrase';
 const slt = new TextEncoder().encode('}vsosh{');
 const ins = 100000;
 let cryptoKeyPromise = null;
+let cryptoKeyPassphrase = null;
 
 const SENSITIVE_KEY_PATTERN = /(token|auth|session|jwt|bearer|secret|pass|credential|sid|csrf|xsrf|refresh|access)/i;
 const LARGE_VALUE_THRESHOLD = 2048;
 const MIN_OBSERVATION_MS = 3000;
 const CORRELATION_WINDOW_MS = 2500;
+const ANALYSIS_DEBOUNCE_MS = 1500;
+const ANALYSIS_MIN_INTERVAL_MS = 12000;
+const FORCE_REPORT_INTERVAL_MS = 90000;
+const FULL_ANALYSIS_MIN_INTERVAL_MS = 45000;
+const SIGNIFICANT_SCORE_DELTA = 8;
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const API_HOST_PATTERN = /(^|[.-])(api|graphql|gateway|backend|service|rest)\b/i;
+const API_PATH_PATTERN = /(?:^|\/)(api|graphql|rest|rpc|jsonrpc|v\d+)(?:\/|$)/i;
+const COMMON_SECOND_LEVEL_DOMAINS = new Set([
+    'co.uk',
+    'org.uk',
+    'gov.uk',
+    'ac.uk',
+    'com.au',
+    'net.au',
+    'org.au',
+    'co.jp',
+    'co.kr',
+    'com.br',
+    'com.mx',
+    'com.tr',
+    'com.cn',
+    'com.tw',
+    'co.in',
+    'net.in',
+    'org.in',
+    'co.id'
+]);
+const PAGE_HOSTNAME = String(window.location.hostname || '').toLowerCase();
+const PAGE_BASE_DOMAIN = getBaseDomain(PAGE_HOSTNAME);
 
 const runtimeSignals = createRuntimeSignals();
+const analysisState = createAnalysisState();
 setupRuntimeMonitoring();
 
 function createRuntimeSignals() {
@@ -28,8 +60,10 @@ function createRuntimeSignals() {
             highEntropyWrites: 0,
             largeValueWrites: 0,
             encodedLikeWrites: 0,
+            sensitiveHighEntropyWrites: 0,
             keyStats: Object.create(null),
             lastStorageEventAt: 0,
+            lastSensitiveWriteAt: 0,
             writeTimestamps: [],
             storageEventTimestamps: []
         },
@@ -40,8 +74,18 @@ function createRuntimeSignals() {
             websocketConnections: 0,
             crossOriginRequests: 0,
             requestsAfterStorageEvent: 0,
+            requestsAfterSensitiveWrite: 0,
             encodedPayloadRequests: 0,
             totalBodyBytes: 0,
+            sameSiteRequests: 0,
+            unrelatedRequests: 0,
+            apiRequests: 0,
+            unrelatedApiRequests: 0,
+            mutatingRequests: 0,
+            mutatingAfterStorageEvent: 0,
+            mutatingAfterSensitiveWrite: 0,
+            requestsWithoutUrl: 0,
+            hostStats: Object.create(null),
             requestTimestamps: []
         },
         activity: {
@@ -62,6 +106,21 @@ function createRuntimeSignals() {
             hiddenMutationBursts: 0
         },
         probeErrors: 0
+    };
+}
+
+function createAnalysisState() {
+    return {
+        timerId: null,
+        inFlight: false,
+        pending: false,
+        pendingReasons: new Set(),
+        lastRunAt: 0,
+        lastReportedAt: 0,
+        lastReportedScore: null,
+        lastReportedRisk: null,
+        lastFullRunAt: 0,
+        protectionDisabledLogged: false
     };
 }
 
@@ -123,18 +182,21 @@ function handleProbeMessage(event) {
     switch (type) {
         case 'probe_ready':
             runtimeSignals.probeReady = true;
+            scheduleAnalysis('probe_ready');
             break;
         case 'probe_error':
             runtimeSignals.probeErrors += 1;
             break;
         case 'storage':
             applyStorageSignal(payload, timestamp);
+            maybeScheduleAnalysisFromSignals('storage');
             break;
         case 'network_fetch':
         case 'network_xhr':
         case 'network_beacon':
         case 'network_ws':
             applyNetworkSignal(type, payload, timestamp);
+            maybeScheduleAnalysisFromSignals('network');
             break;
         case 'timer':
             applyTimerSignal(payload);
@@ -144,6 +206,7 @@ function handleProbeMessage(event) {
             break;
         case 'history':
             runtimeSignals.activity.historyWrites += 1;
+            scheduleAnalysis('history', { force: true });
             break;
         default:
             break;
@@ -172,7 +235,13 @@ function applyStorageSignal(payload, timestamp) {
             keyBucket.lastEntropy = Number(payload.entropy) || 0;
             keyBucket.encodedLike = Boolean(payload.encodedLike);
 
-            if (keyBucket.sensitive) runtimeSignals.storage.sensitiveKeyWrites += 1;
+            if (keyBucket.sensitive) {
+                runtimeSignals.storage.sensitiveKeyWrites += 1;
+                runtimeSignals.storage.lastSensitiveWriteAt = timestamp;
+                if (keyBucket.lastEntropy >= 4.3 && keyBucket.lastValueLength >= 64) {
+                    runtimeSignals.storage.sensitiveHighEntropyWrites += 1;
+                }
+            }
             if (keyBucket.lastValueLength >= LARGE_VALUE_THRESHOLD) runtimeSignals.storage.largeValueWrites += 1;
             if (keyBucket.lastEntropy >= 4.3 && keyBucket.lastValueLength >= 64) runtimeSignals.storage.highEntropyWrites += 1;
             if (keyBucket.encodedLike) runtimeSignals.storage.encodedLikeWrites += 1;
@@ -200,6 +269,72 @@ function applyStorageSignal(payload, timestamp) {
     if (document.hidden) runtimeSignals.activity.hiddenStorageOps += 1;
 }
 
+function getBaseDomain(hostname) {
+    if (!hostname) return '';
+
+    const safeHost = String(hostname || '').toLowerCase();
+    if (!safeHost) return '';
+
+    // Keep IP addresses as-is to avoid false "related domain" matches.
+    if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(safeHost) || safeHost.includes(':')) {
+        return safeHost;
+    }
+
+    const parts = safeHost.split('.').filter(Boolean);
+    if (parts.length <= 2) return safeHost;
+
+    const tail2 = `${parts[parts.length - 2]}.${parts[parts.length - 1]}`;
+    if (COMMON_SECOND_LEVEL_DOMAINS.has(tail2) && parts.length >= 3) {
+        return `${parts[parts.length - 3]}.${tail2}`;
+    }
+
+    return tail2;
+}
+
+function isApiLikeTarget(hostname, pathname) {
+    const host = String(hostname || '').toLowerCase();
+    const path = String(pathname || '');
+    return API_HOST_PATTERN.test(host) || API_PATH_PATTERN.test(path);
+}
+
+function classifyNetworkTarget(rawUrl) {
+    if (!rawUrl) return null;
+
+    try {
+        const parsed = new URL(String(rawUrl), window.location.href);
+        const hostname = String(parsed.hostname || '').toLowerCase();
+        const baseDomain = getBaseDomain(hostname);
+        const isSameSiteFamily = hostname === PAGE_HOSTNAME || (baseDomain && baseDomain === PAGE_BASE_DOMAIN);
+        const apiLike = isApiLikeTarget(hostname, parsed.pathname);
+
+        return {
+            hostname,
+            pathname: parsed.pathname || '/',
+            baseDomain,
+            isSameSiteFamily,
+            apiLike,
+            unrelatedApi: apiLike && !isSameSiteFamily
+        };
+    } catch {
+        return null;
+    }
+}
+
+function getOrCreateHostBucket(hostname) {
+    const safeHost = hostname || '[unknown]';
+    if (!runtimeSignals.network.hostStats[safeHost]) {
+        runtimeSignals.network.hostStats[safeHost] = {
+            requests: 0,
+            crossOriginRequests: 0,
+            unrelatedRequests: 0,
+            apiRequests: 0,
+            unrelatedApiRequests: 0,
+            mutatingRequests: 0
+        };
+    }
+    return runtimeSignals.network.hostStats[safeHost];
+}
+
 function applyNetworkSignal(type, payload, timestamp) {
     if (type === 'network_fetch') runtimeSignals.network.fetchRequests += 1;
     if (type === 'network_xhr') runtimeSignals.network.xhrRequests += 1;
@@ -216,9 +351,52 @@ function applyNetworkSignal(type, payload, timestamp) {
         runtimeSignals.network.encodedPayloadRequests += 1;
     }
 
+    const method = String(payload.method || 'GET').toUpperCase();
+    const isMutatingMethod = MUTATING_METHODS.has(method);
+    if (isMutatingMethod) {
+        runtimeSignals.network.mutatingRequests += 1;
+    }
+
+    const target = classifyNetworkTarget(payload.url);
+    if (target) {
+        const hostBucket = getOrCreateHostBucket(target.hostname);
+        hostBucket.requests += 1;
+
+        if (crossOrigin) hostBucket.crossOriginRequests += 1;
+        if (target.isSameSiteFamily) {
+            runtimeSignals.network.sameSiteRequests += 1;
+        } else {
+            runtimeSignals.network.unrelatedRequests += 1;
+            hostBucket.unrelatedRequests += 1;
+        }
+
+        if (target.apiLike) {
+            runtimeSignals.network.apiRequests += 1;
+            hostBucket.apiRequests += 1;
+        }
+
+        if (target.unrelatedApi) {
+            runtimeSignals.network.unrelatedApiRequests += 1;
+            hostBucket.unrelatedApiRequests += 1;
+        }
+
+        if (isMutatingMethod) {
+            hostBucket.mutatingRequests += 1;
+        }
+    } else {
+        runtimeSignals.network.requestsWithoutUrl += 1;
+    }
+
     const lastStorageAt = runtimeSignals.storage.lastStorageEventAt || 0;
     if (lastStorageAt > 0 && timestamp - lastStorageAt <= CORRELATION_WINDOW_MS) {
         runtimeSignals.network.requestsAfterStorageEvent += 1;
+        if (isMutatingMethod) runtimeSignals.network.mutatingAfterStorageEvent += 1;
+    }
+
+    const lastSensitiveWriteAt = runtimeSignals.storage.lastSensitiveWriteAt || 0;
+    if (lastSensitiveWriteAt > 0 && timestamp - lastSensitiveWriteAt <= CORRELATION_WINDOW_MS) {
+        runtimeSignals.network.requestsAfterSensitiveWrite += 1;
+        if (isMutatingMethod) runtimeSignals.network.mutatingAfterSensitiveWrite += 1;
     }
 
     runtimeSignals.network.requestTimestamps.push(timestamp);
@@ -248,6 +426,62 @@ function applyListenerSignal(payload) {
     if (eventName === 'pagehide') runtimeSignals.activity.pagehideListeners += 1;
     if (eventName === 'visibilitychange') runtimeSignals.activity.visibilityListeners += 1;
     if (eventName === 'storage') runtimeSignals.activity.storageListeners += 1;
+}
+
+function maybeScheduleAnalysisFromSignals(source) {
+    const storageOps = runtimeSignals.storage;
+    const networkOps = runtimeSignals.network;
+    const writeBurst1s = maxEventsInWindow(storageOps.writeTimestamps, 1000);
+    const networkBurst1s = maxEventsInWindow(networkOps.requestTimestamps, 1000);
+
+    const suspiciousBridge =
+        networkOps.requestsAfterSensitiveWrite >= 2 ||
+        networkOps.mutatingAfterSensitiveWrite >= 1 ||
+        networkOps.mutatingAfterStorageEvent >= 2 ||
+        networkOps.unrelatedApiRequests >= 2;
+
+    if (suspiciousBridge) {
+        scheduleAnalysis(`signal:${source}:suspicious`, { force: true });
+        return;
+    }
+
+    if (source === 'storage') {
+        if (writeBurst1s >= 4 || storageOps.sensitiveHighEntropyWrites >= 1) {
+            scheduleAnalysis('signal:storage');
+        }
+        return;
+    }
+
+    if (source === 'network') {
+        if (networkBurst1s >= 7 || networkOps.unrelatedRequests >= 4 || networkOps.apiRequests >= 5) {
+            scheduleAnalysis('signal:network');
+        }
+    }
+}
+
+function scheduleAnalysis(reason, options = {}) {
+    const { force = false } = options;
+    analysisState.pendingReasons.add(reason || 'runtime');
+
+    if (analysisState.inFlight) {
+        analysisState.pending = true;
+        return;
+    }
+
+    if (analysisState.timerId) {
+        window.clearTimeout(analysisState.timerId);
+        analysisState.timerId = null;
+    }
+
+    const now = Date.now();
+    const sinceLastRun = now - analysisState.lastRunAt;
+    const cooldownMs = force ? 0 : Math.max(0, ANALYSIS_MIN_INTERVAL_MS - sinceLastRun);
+    const delay = force ? Math.max(250, Math.min(900, cooldownMs)) : Math.max(ANALYSIS_DEBOUNCE_MS, cooldownMs);
+
+    analysisState.timerId = window.setTimeout(() => {
+        analysisState.timerId = null;
+        void runAnalysisCycle();
+    }, delay);
 }
 
 function getKeyBucket(key, area) {
@@ -362,10 +596,22 @@ async function logToExtension(message, type = 'info') {
     }
 }
 
+async function getEncryptionPassphrase() {
+    const stored = await chrome.storage.local.get(ENCRYPTION_KEY_STORAGE);
+    const passphrase = stored?.[ENCRYPTION_KEY_STORAGE];
+
+    if (typeof passphrase !== 'string' || passphrase.length === 0) {
+        throw new Error('Ключ шифрования не задан. Добавьте его в popup расширения.');
+    }
+
+    return passphrase;
+}
+
 async function getCryptoKey() {
-    if (!cryptoKeyPromise) {
-        const encoder = new TextEncoder();
-        const passwordBuffer = encoder.encode(pwd);
+    const passphrase = await getEncryptionPassphrase();
+
+    if (!cryptoKeyPromise || cryptoKeyPassphrase !== passphrase) {
+        const passwordBuffer = new TextEncoder().encode(passphrase);
         const baseKey = await crypto.subtle.importKey(
             'raw',
             passwordBuffer,
@@ -385,6 +631,7 @@ async function getCryptoKey() {
             false,
             ['encrypt', 'decrypt']
         );
+        cryptoKeyPassphrase = passphrase;
     }
     return cryptoKeyPromise;
 }
@@ -458,10 +705,22 @@ async function analyze() {
     const keyStatsEntries = Object.entries(storageOps.keyStats);
     const keyStatsValues = keyStatsEntries.map(([, value]) => value);
     const churnedKeys = keyStatsValues.filter(k => k.writes >= 3).length;
+    const rotatingKeys = keyStatsValues.filter(k => k.writes >= 3 && k.removes >= 1).length;
     const sensitiveTouchedKeys = keyStatsValues.filter(k => k.sensitive).length;
+    const sensitiveHighEntropyKeys = keyStatsValues.filter(
+        (k) => k.sensitive && k.lastEntropy >= 4.3 && k.lastValueLength >= 64
+    ).length;
 
     const writeBurst1s = maxEventsInWindow(storageOps.writeTimestamps, 1000);
     const networkBurst1s = maxEventsInWindow(networkOps.requestTimestamps, 1000);
+    const writeReadRatio = writes / Math.max(1, reads);
+
+    const hostStatsEntries = Object.entries(networkOps.hostStats);
+    const uniqueHosts = hostStatsEntries.length;
+    const unrelatedHosts = hostStatsEntries.filter(([, value]) => value.unrelatedRequests > 0).length;
+    const apiHosts = hostStatsEntries.filter(([, value]) => value.apiRequests > 0).length;
+    const unrelatedApiHosts = hostStatsEntries.filter(([, value]) => value.unrelatedApiRequests > 0).length;
+    const unrelatedRatio = totalRequests > 0 ? networkOps.unrelatedRequests / totalRequests : 0;
 
     const mutationVolume =
         activityOps.mutationBatches +
@@ -472,30 +731,46 @@ async function analyze() {
     const mutationRatePerSec = mutationVolume / observationSec;
 
     const storageParts = {
-        writeIntensity: Math.min(14, Math.round(writes * 1.2)),
-        readIntensity: Math.min(6, Math.round(reads * 0.35)),
-        sensitiveUsage: Math.min(10, storageOps.sensitiveKeyWrites * 2 + localSnapshot.sensitiveKeys),
+        writeIntensity: Math.min(12, Math.round(writes * 1.1)),
+        readIntensity: Math.min(5, Math.round(reads * 0.3)),
+        sensitiveUsage: Math.min(9, storageOps.sensitiveKeyWrites * 2 + localSnapshot.sensitiveKeys),
         destructiveOps: Math.min(8, destructiveOps * 2),
         payloadRisk: Math.min(
-            9,
+            8,
             storageOps.largeValueWrites * 2 +
             storageOps.highEntropyWrites * 2 +
             storageOps.encodedLikeWrites +
             localSnapshot.largeValues +
             sessionSnapshot.largeValues
         ),
-        burstRisk: Math.min(7, Math.max(0, writeBurst1s - 2) * 2),
-        churnRisk: Math.min(7, churnedKeys * 2),
-        footprintRisk: Math.min(5, Math.round((localSnapshot.keyCount + sessionSnapshot.keyCount) / 6))
+        burstRisk: Math.min(6, Math.max(0, writeBurst1s - 2) * 2),
+        churnRisk: Math.min(5, churnedKeys * 2),
+        keyRotationRisk: Math.min(5, rotatingKeys * 2),
+        sensitiveEntropyRisk: Math.min(6, storageOps.sensitiveHighEntropyWrites * 2 + sensitiveHighEntropyKeys),
+        writeDominanceRisk: Math.min(4, writeReadRatio >= 3 ? Math.round(writeReadRatio) : 0),
+        footprintRisk: Math.min(4, Math.round((localSnapshot.keyCount + sessionSnapshot.keyCount) / 8))
     };
 
     const networkParts = {
-        requestIntensity: Math.min(8, Math.round(totalRequests * 0.8)),
-        crossOriginRisk: Math.min(10, networkOps.crossOriginRequests * 2),
-        storageCorrelationRisk: Math.min(10, networkOps.requestsAfterStorageEvent * 2),
+        requestIntensity: Math.min(6, Math.round(totalRequests * 0.7)),
+        crossOriginRisk: Math.min(5, Math.round(networkOps.crossOriginRequests * 1.2)),
+        domainDiversityRisk: Math.min(6, Math.max(0, uniqueHosts - 2) + unrelatedHosts),
+        unrelatedDomainRisk: Math.min(7, Math.round(networkOps.unrelatedRequests * 1.3) + unrelatedHosts),
+        apiSurfaceRisk: Math.min(6, apiHosts + Math.round(networkOps.apiRequests * 0.7)),
+        unrelatedApiRisk: Math.min(7, unrelatedApiHosts * 2 + networkOps.unrelatedApiRequests * 2),
+        storageCorrelationRisk: Math.min(
+            8,
+            networkOps.requestsAfterStorageEvent +
+            networkOps.requestsAfterSensitiveWrite * 2
+        ),
+        mutatingCorrelationRisk: Math.min(
+            6,
+            networkOps.mutatingAfterStorageEvent * 2 +
+            networkOps.mutatingAfterSensitiveWrite * 2
+        ),
         outboundDataRisk: Math.min(4, Math.round(networkOps.totalBodyBytes / 8192)),
-        encodedPayloadRisk: Math.min(5, networkOps.encodedPayloadRequests * 2),
-        beaconAndWsRisk: Math.min(6, networkOps.beaconRequests * 2 + networkOps.websocketConnections * 3)
+        encodedPayloadRisk: Math.min(4, networkOps.encodedPayloadRequests * 2),
+        beaconAndWsRisk: Math.min(5, networkOps.beaconRequests * 2 + networkOps.websocketConnections * 2)
     };
 
     const activityParts = {
@@ -541,13 +816,31 @@ async function analyze() {
         );
     }
 
+    if (storageOps.sensitiveHighEntropyWrites > 0 || sensitiveHighEntropyKeys > 0) {
+        issues.push(
+            `Чувствительные ключи с высокоэнтропийными значениями: runtime=${storageOps.sensitiveHighEntropyWrites}, snapshot=${sensitiveHighEntropyKeys}.`
+        );
+    }
+
     if (writeBurst1s >= 4) {
         issues.push(`Всплеск записи в storage: до ${writeBurst1s} операций/сек.`);
     }
 
     if (networkScore >= 16) {
         issues.push(
-            `Сетевая активность после storage-событий: ${networkOps.requestsAfterStorageEvent} запросов, cross-origin=${networkOps.crossOriginRequests}.`
+            `Сетевая активность после storage-событий: ${networkOps.requestsAfterStorageEvent} запросов, после чувствительных записей=${networkOps.requestsAfterSensitiveWrite}.`
+        );
+    }
+
+    if (networkOps.unrelatedRequests > 0 || unrelatedHosts > 0) {
+        issues.push(
+            `Внешние домены вне зоны сайта: запросов=${networkOps.unrelatedRequests}, уникальных доменов=${unrelatedHosts}, доля=${Math.round(unrelatedRatio * 100)}%.`
+        );
+    }
+
+    if (networkOps.unrelatedApiRequests > 0) {
+        issues.push(
+            `Обращения к API внешних доменов: запросов=${networkOps.unrelatedApiRequests}, доменов=${unrelatedApiHosts}.`
         );
     }
 
@@ -577,7 +870,21 @@ async function analyze() {
             writes: value.writes,
             reads: value.reads,
             sensitive: value.sensitive,
-            lastValueLength: value.lastValueLength
+            lastValueLength: value.lastValueLength,
+            lastEntropy: Number(value.lastEntropy || 0)
+        }));
+
+    const topDomains = hostStatsEntries
+        .sort((a, b) => b[1].requests - a[1].requests)
+        .slice(0, 8)
+        .map(([host, value]) => ({
+            host,
+            requests: value.requests,
+            crossOriginRequests: value.crossOriginRequests,
+            unrelatedRequests: value.unrelatedRequests,
+            apiRequests: value.apiRequests,
+            unrelatedApiRequests: value.unrelatedApiRequests,
+            mutatingRequests: value.mutatingRequests
         }));
 
     return {
@@ -585,10 +892,14 @@ async function analyze() {
         risk,
         issues: issues.slice(0, 8),
         details: {
-            version: 'behavioral-v2',
+            version: 'behavioral-v3',
             observationMs,
             probeReady: runtimeSignals.probeReady,
             probeErrors: runtimeSignals.probeErrors,
+            pageContext: {
+                host: PAGE_HOSTNAME,
+                baseDomain: PAGE_BASE_DOMAIN
+            },
             components: {
                 storage: { score: storageScore, parts: storageParts },
                 network: { score: networkScore, parts: networkParts },
@@ -608,9 +919,13 @@ async function analyze() {
                     highEntropyWrites: storageOps.highEntropyWrites,
                     largeValueWrites: storageOps.largeValueWrites,
                     encodedLikeWrites: storageOps.encodedLikeWrites,
+                    sensitiveHighEntropyWrites: storageOps.sensitiveHighEntropyWrites,
                     keyCountTouched: keyStatsValues.length,
                     sensitiveTouchedKeys,
+                    sensitiveHighEntropyKeys,
                     churnedKeys,
+                    rotatingKeys,
+                    writeReadRatio: Number(writeReadRatio.toFixed(2)),
                     writeBurst1s
                 },
                 network: {
@@ -621,8 +936,22 @@ async function analyze() {
                     websocketConnections: networkOps.websocketConnections,
                     crossOriginRequests: networkOps.crossOriginRequests,
                     requestsAfterStorageEvent: networkOps.requestsAfterStorageEvent,
+                    requestsAfterSensitiveWrite: networkOps.requestsAfterSensitiveWrite,
                     encodedPayloadRequests: networkOps.encodedPayloadRequests,
                     totalBodyBytes: networkOps.totalBodyBytes,
+                    sameSiteRequests: networkOps.sameSiteRequests,
+                    unrelatedRequests: networkOps.unrelatedRequests,
+                    apiRequests: networkOps.apiRequests,
+                    unrelatedApiRequests: networkOps.unrelatedApiRequests,
+                    mutatingRequests: networkOps.mutatingRequests,
+                    mutatingAfterStorageEvent: networkOps.mutatingAfterStorageEvent,
+                    mutatingAfterSensitiveWrite: networkOps.mutatingAfterSensitiveWrite,
+                    requestsWithoutUrl: networkOps.requestsWithoutUrl,
+                    uniqueHosts,
+                    unrelatedHosts,
+                    apiHosts,
+                    unrelatedApiHosts,
+                    unrelatedRatio: Number(unrelatedRatio.toFixed(3)),
                     networkBurst1s
                 },
                 activity: {
@@ -648,7 +977,8 @@ async function analyze() {
                     session: sessionSnapshot
                 }
             },
-            hotKeys: topChurnKeys
+            hotKeys: topChurnKeys,
+            hotDomains: topDomains
         }
     };
 }
@@ -658,6 +988,8 @@ async function safeEncryptAll() {
         await logToExtension('Авто-шифрование пропущено: защита отключена', 'info');
         return { count: 0, skipped: 0, disabled: true };
     }
+
+    await getCryptoKey();
 
     const keys = [];
     for (let i = 0; i < localStorage.length; i++) {
@@ -684,6 +1016,8 @@ async function safeEncryptAll() {
 }
 
 async function safeDecryptAll() {
+    await getCryptoKey();
+
     const keys = [];
     for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
@@ -785,48 +1119,120 @@ function requestFullAnalysis(analysis) {
     });
 }
 
-if (chrome.runtime?.sendMessage) {
-    window.addEventListener('load', async () => {
-        try {
-            if (!(await isProtectionEnabled())) {
+function riskToRank(risk) {
+    if (risk === 'high') return 3;
+    if (risk === 'medium') return 2;
+    return 1;
+}
+
+function shouldReportAnalysis(analysis, reasons, now) {
+    if (analysisState.lastReportedScore === null || analysisState.lastReportedRisk === null) {
+        return true;
+    }
+
+    const hasPriorityReason = reasons.some((reason) =>
+        reason === 'load' ||
+        reason === 'pageshow' ||
+        reason === 'popstate' ||
+        reason === 'hashchange' ||
+        reason.includes('history') ||
+        reason.includes('suspicious')
+    );
+    if (hasPriorityReason) return true;
+
+    const scoreDelta = Math.abs((analysisState.lastReportedScore || 0) - analysis.score);
+    if (scoreDelta >= SIGNIFICANT_SCORE_DELTA) return true;
+
+    if (riskToRank(analysis.risk) !== riskToRank(analysisState.lastReportedRisk)) {
+        return true;
+    }
+
+    return now - analysisState.lastReportedAt >= FORCE_REPORT_INTERVAL_MS;
+}
+
+function shouldRunFullAnalysis(mode, analysis, reasons, now) {
+    if (mode === 'local') return false;
+    if (analysis.risk === 'high') return true;
+
+    const sinceLastFull = now - analysisState.lastFullRunAt;
+    if (analysisState.lastFullRunAt === 0) {
+        return analysis.score >= 35;
+    }
+
+    if (sinceLastFull < FULL_ANALYSIS_MIN_INTERVAL_MS) {
+        return false;
+    }
+
+    if (analysis.score >= 55) return true;
+
+    return reasons.some((reason) =>
+        reason === 'load' ||
+        reason === 'pageshow' ||
+        reason.includes('history') ||
+        reason.includes('suspicious')
+    );
+}
+
+function resetRuntimeSignalWindow() {
+    const next = createRuntimeSignals();
+    runtimeSignals.startedAt = Date.now();
+    runtimeSignals.storage = next.storage;
+    runtimeSignals.network = next.network;
+    runtimeSignals.activity = next.activity;
+}
+
+async function runAnalysisCycle() {
+    if (!chrome.runtime?.sendMessage) return;
+    if (analysisState.inFlight) {
+        analysisState.pending = true;
+        return;
+    }
+
+    analysisState.inFlight = true;
+    const reasons = Array.from(analysisState.pendingReasons);
+    analysisState.pendingReasons.clear();
+    analysisState.lastRunAt = Date.now();
+
+    try {
+        if (!(await isProtectionEnabled())) {
+            if (!analysisState.protectionDisabledLogged) {
                 await logToExtension(`Защита отключена, анализ пропущен для ${window.location.origin}`, 'info');
-                return;
+                analysisState.protectionDisabledLogged = true;
             }
+            return;
+        }
+        analysisState.protectionDisabledLogged = false;
 
-            await logToExtension(`Старт локального анализа для ${window.location.origin}`, 'info');
-            const analysis = await analyze();
-            await logToExtension(
-                `Результат локального анализа ${window.location.origin}: угроза - ${analysis.risk}, счет - ${analysis.score}`,
-                'info'
-            );
+        const analysis = await analyze();
+        const now = Date.now();
+        const shouldReport = shouldReportAnalysis(analysis, reasons, now);
 
-            const { settings = {} } = await chrome.storage.sync.get('settings');
-            const mode = settings.mode || 'hybrid';
-            const autoEncrypt = settings.autoEncrypt !== false;
+        if (!shouldReport) {
+            return;
+        }
 
-            if (analysis.risk !== 'high' || !autoEncrypt) {
+        await logToExtension(
+            `Анализ ${window.location.origin}: угроза=${analysis.risk}, счет=${analysis.score}, триггеры=${reasons.join(',') || 'scheduled'}`,
+            'info'
+        );
+
+        const { settings = {} } = await chrome.storage.sync.get('settings');
+        const mode = settings.mode || 'hybrid';
+        const autoEncrypt = settings.autoEncrypt !== false;
+
+        if (mode === 'local') {
+            chrome.runtime.sendMessage({
+                action: 'page_analyzed',
+                url: window.location.origin,
+                ...analysis
+            });
+
+            if (analysis.risk === 'high' && autoEncrypt) {
                 chrome.runtime.sendMessage({
-                    action: 'page_analyzed',
-                    url: window.location.origin,
-                    ...analysis
+                    action: 'log_event',
+                    message: 'Локальный режим анализа, запускаю авто-шифрование',
+                    type: 'auto_encrypt'
                 });
-                await logToExtension(
-                    `Авто-шифрование не запущено (risk=${analysis.risk}, autoEncrypt=${autoEncrypt})`,
-                    'info'
-                );
-                return;
-            }
-
-            if (mode === 'local') {
-                chrome.runtime.sendMessage({
-                    action: 'page_analyzed',
-                    url: window.location.origin,
-                    ...analysis
-                });
-                await logToExtension(
-                    'Локальный режим анализа, запускаю авто-шифрование',
-                    'auto_encrypt'
-                );
                 const result = await safeEncryptAll();
                 if (result.count > 0) {
                     chrome.runtime.sendMessage({
@@ -838,46 +1244,91 @@ if (chrome.runtime?.sendMessage) {
                         'auto_encrypt'
                     );
                 }
-                return;
             }
-
-            await logToExtension(
-                'Полный режим анализа: отправляю запрос на полный анализ',
-                'info'
-            );
-            const full = await requestFullAnalysis(analysis);
-            await logToExtension(
-                `Ответ полного анализа: угроза - ${full.aiDanger}`,
-                'info'
-            );
-
-            if (full.aiDanger === 'высокий') {
-                const result = await safeEncryptAll();
-                if (result.count > 0) {
-                    chrome.runtime.sendMessage({
-                        action: 'page_analyzed',
-                        url: window.location.origin,
-                        ...analysis,
-                        encryptedByAI: true,
-                        encryptedCount: result.count
-                    });
-                    chrome.runtime.sendMessage({
-                        action: 'show_notification',
-                        message: `Сайт признан опасным. Зашифровано ${result.count} записей (Полный анализ)`
-                    });
-                    await logToExtension(
-                        `Полный анализ: зашифровано ${result.count} записей`,
-                        'auto_encrypt_ai'
-                    );
-                }
+        } else {
+            const runFull = shouldRunFullAnalysis(mode, analysis, reasons, now);
+            if (!runFull) {
+                chrome.runtime.sendMessage({
+                    action: 'page_analyzed',
+                    url: window.location.origin,
+                    ...analysis
+                });
             } else {
                 await logToExtension(
-                    `Вердикт ИИ не высок (${full.aiDanger}), авто-шифрование не выполняется`,
+                    `Полный режим анализа: отправляю запрос на полный анализ (локальный risk=${analysis.risk})`,
                     'info'
                 );
+                const full = await requestFullAnalysis(analysis);
+                analysisState.lastFullRunAt = now;
+
+                await logToExtension(
+                    `Ответ полного анализа: угроза - ${full.aiDanger}`,
+                    'info'
+                );
+
+                if (autoEncrypt && full.aiDanger === 'высокий') {
+                    const result = await safeEncryptAll();
+                    if (result.count > 0) {
+                        chrome.runtime.sendMessage({
+                            action: 'show_notification',
+                            message: `Сайт признан опасным. Зашифровано ${result.count} записей (Полный анализ)`
+                        });
+                        await logToExtension(
+                            `Полный анализ: зашифровано ${result.count} записей`,
+                            'auto_encrypt_ai'
+                        );
+                    }
+                }
             }
-        } catch (e) {
-            await logToExtension(`Ошибка анализа: ${e.message}`, 'error');
         }
-    }, { once: true });
+
+        analysisState.lastReportedAt = now;
+        analysisState.lastReportedRisk = analysis.risk;
+        analysisState.lastReportedScore = analysis.score;
+    } catch (e) {
+        await logToExtension(`Ошибка анализа: ${e.message}`, 'error');
+    } finally {
+        resetRuntimeSignalWindow();
+        analysisState.inFlight = false;
+        if (analysisState.pending) {
+            analysisState.pending = false;
+            scheduleAnalysis('pending', { force: true });
+        }
+    }
+}
+
+function registerDynamicAnalysisTriggers() {
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        scheduleAnalysis('startup', { force: true });
+    }
+
+    window.addEventListener(
+        'load',
+        () => {
+            scheduleAnalysis('load', { force: true });
+        },
+        { once: true }
+    );
+
+    window.addEventListener('popstate', () => {
+        scheduleAnalysis('popstate', { force: true });
+    });
+
+    window.addEventListener('hashchange', () => {
+        scheduleAnalysis('hashchange', { force: true });
+    });
+
+    window.addEventListener('pageshow', () => {
+        scheduleAnalysis('pageshow');
+    });
+
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) {
+            scheduleAnalysis('visible');
+        }
+    });
+}
+
+if (chrome.runtime?.sendMessage) {
+    registerDynamicAnalysisTriggers();
 }

@@ -1,13 +1,15 @@
 const STATUS_TIMEOUT_MS = 3000;
+const ENCRYPTION_KEY_STORAGE = 'encryptionPassphrase';
 
 const dom = {};
 let statusTimer = null;
 
 document.addEventListener('DOMContentLoaded', init);
 
-function init() {
+async function init() {
   cacheDom();
   bindEvents();
+  await restoreSavedKeyState();
 }
 
 function cacheDom() {
@@ -15,6 +17,9 @@ function cacheDom() {
   dom.decryptBtn = document.getElementById('decryptBtn');
   dom.exportBtn = document.getElementById('exportBtn');
   dom.optionsBtn = document.getElementById('optionsBtn');
+  dom.encryptionKeyInput = document.getElementById('encryptionKeyInput');
+  dom.saveKeyBtn = document.getElementById('saveKeyBtn');
+  dom.keyStatus = document.getElementById('keyStatus');
   dom.status = document.getElementById('status');
 }
 
@@ -41,6 +46,12 @@ function bindEvents() {
 
   dom.exportBtn.addEventListener('click', exportData);
   dom.optionsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
+  dom.saveKeyBtn.addEventListener('click', saveEncryptionKey);
+  dom.encryptionKeyInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      saveEncryptionKey();
+    }
+  });
 }
 
 async function runTabAction({ button, loadingText, action, onSuccess, fallbackError }) {
@@ -54,12 +65,52 @@ async function runTabAction({ button, loadingText, action, onSuccess, fallbackEr
       return;
     }
 
-    showStatus(fallbackError, 'error');
+    showStatus(response?.error || fallbackError, 'error');
   } catch (error) {
     showStatus(`Ошибка: ${error.message}`, 'error');
   } finally {
     setButtonLoading(button, false);
   }
+}
+
+async function saveEncryptionKey() {
+  const passphrase = dom.encryptionKeyInput.value.trim();
+  if (!passphrase) {
+    showStatus('Введите ключ шифрования', 'error');
+    dom.encryptionKeyInput.focus();
+    return;
+  }
+
+  setButtonLoading(dom.saveKeyBtn, true, 'Сохраняем...');
+  try {
+    await chrome.storage.local.set({ [ENCRYPTION_KEY_STORAGE]: passphrase });
+    dom.encryptionKeyInput.value = '';
+    dom.encryptionKeyInput.placeholder = 'Ключ сохранён';
+    setKeyStatus(true);
+    showStatus('Ключ шифрования сохранён', 'success');
+  } catch (error) {
+    showStatus(`Ошибка сохранения ключа: ${error.message}`, 'error');
+  } finally {
+    setButtonLoading(dom.saveKeyBtn, false);
+  }
+}
+
+async function restoreSavedKeyState() {
+  try {
+    const data = await chrome.storage.local.get(ENCRYPTION_KEY_STORAGE);
+    setKeyStatus(Boolean(data?.[ENCRYPTION_KEY_STORAGE]));
+  } catch {
+    setKeyStatus(false);
+  }
+}
+
+function setKeyStatus(hasKey) {
+  if (!dom.keyStatus) return;
+
+  dom.keyStatus.textContent = hasKey
+    ? 'Ключ сохранён и готов к использованию.'
+    : 'Ключ не задан.';
+  dom.keyStatus.className = `key-status ${hasKey ? 'ready' : 'missing'}`;
 }
 
 async function exportData() {
