@@ -1,6 +1,8 @@
 const FEEDBACK_TIMEOUT_MS = 2600;
 const VISIBLE_LOGS_LIMIT = 50;
-const ALLOWED_LOG_TYPES = new Set(['error', 'warn', 'info', 'system', 'auto_encrypt']);
+const DEFAULT_LM_ENDPOINT = 'http://127.0.0.1:1234/v1/chat/completions';
+const DEFAULT_LM_MODEL = 'qwen3-4b-2507';
+const ALLOWED_LOG_TYPES = new Set(['error', 'warn', 'info', 'system', 'auto_encrypt', 'request', 'lm_response', 'lm_verdict', 'auto_encrypt_ai']);
 
 const dom = {};
 let feedbackTimer = null;
@@ -32,11 +34,16 @@ function cacheDom() {
   dom.riskDesc = document.getElementById('risk-desc');
 
   dom.modeSelect = document.getElementById('mode-select');
+  dom.fullAnalysisPolicy = document.getElementById('full-analysis-policy');
+  dom.lmEndpoint = document.getElementById('lm-endpoint');
+  dom.lmModel = document.getElementById('lm-model');
   dom.notifications = document.getElementById('notifications');
   dom.logging = document.getElementById('logging');
   dom.settingsForm = document.getElementById('settings-form');
   dom.saveSettingsBtn = document.getElementById('save-settings-btn');
   dom.saveSettingsBtn.dataset.baseLabel = dom.saveSettingsBtn.textContent;
+  dom.testLmBtn = document.getElementById('test-lm-btn');
+  dom.lmTestStatus = document.getElementById('lm-test-status');
 
   dom.logsList = document.getElementById('logs-list');
   dom.clearLogsBtn = document.getElementById('clear-logs-btn');
@@ -53,6 +60,7 @@ function bindEvents() {
   dom.sitesList.addEventListener('click', onSitesListClick);
 
   dom.settingsForm.addEventListener('submit', saveSettings);
+  dom.testLmBtn.addEventListener('click', testLmStudioConnection);
   dom.clearLogsBtn.addEventListener('click', clearLogs);
   dom.protectionToggle.addEventListener('click', toggleProtection);
 }
@@ -223,6 +231,13 @@ async function loadSettings() {
   const { settings = {} } = await chrome.storage.sync.get('settings');
 
   dom.modeSelect.value = settings.mode === 'local' ? 'local' : 'hybrid';
+  dom.fullAnalysisPolicy.value = settings.fullAnalysisPolicy === 'smart' ? 'smart' : 'always';
+  dom.lmEndpoint.value = typeof settings.lmStudioEndpoint === 'string' && settings.lmStudioEndpoint.trim()
+    ? settings.lmStudioEndpoint
+    : DEFAULT_LM_ENDPOINT;
+  dom.lmModel.value = typeof settings.lmStudioModel === 'string' && settings.lmStudioModel.trim()
+    ? settings.lmStudioModel
+    : DEFAULT_LM_MODEL;
   dom.notifications.checked = settings.notifications !== false;
   dom.logging.checked = settings.logging !== false;
 
@@ -364,10 +379,15 @@ async function saveSettings(event) {
   event.preventDefault();
 
   const { settings = {} } = await chrome.storage.sync.get('settings');
+  const lmEndpoint = dom.lmEndpoint.value.trim() || DEFAULT_LM_ENDPOINT;
+  const lmModel = dom.lmModel.value.trim() || DEFAULT_LM_MODEL;
 
   const newSettings = {
     ...settings,
     mode: dom.modeSelect.value,
+    fullAnalysisPolicy: dom.fullAnalysisPolicy.value === 'smart' ? 'smart' : 'always',
+    lmStudioEndpoint: lmEndpoint,
+    lmStudioModel: lmModel,
     notifications: dom.notifications.checked,
     logging: dom.logging.checked,
     autoEncrypt: true
@@ -375,6 +395,37 @@ async function saveSettings(event) {
 
   await chrome.storage.sync.set({ settings: newSettings });
   flashSaveButton();
+  showLmTestStatus('Настройки LM Studio сохранены.', 'success');
+}
+
+async function testLmStudioConnection() {
+  const endpoint = dom.lmEndpoint.value.trim() || DEFAULT_LM_ENDPOINT;
+  const model = dom.lmModel.value.trim() || DEFAULT_LM_MODEL;
+
+  setButtonBusy(dom.testLmBtn, true, 'Проверяем...');
+  showLmTestStatus('Проверяем подключение к LM Studio...', 'info');
+
+  try {
+    const response = await sendRuntimeMessage({
+      action: 'test_lm_studio',
+      endpoint,
+      model
+    });
+
+    if (!response?.success || !response?.data?.ok) {
+      throw new Error(response?.error || 'Нет ответа от service worker');
+    }
+
+    const result = response.data;
+    showLmTestStatus(
+      `LM Studio отвечает. Модель: ${result.model}. Вердикт: ${normalizeAiDanger(result.danger) || result.danger}.`,
+      'success'
+    );
+  } catch (error) {
+    showLmTestStatus(`Ошибка LM Studio: ${error.message}`, 'error');
+  } finally {
+    setButtonBusy(dom.testLmBtn, false);
+  }
 }
 
 function flashSaveButton() {
@@ -546,10 +597,43 @@ function clearSiteFeedback() {
   dom.siteFeedback.className = 'feedback';
 }
 
+function showLmTestStatus(text, type = 'info') {
+  if (!dom.lmTestStatus) return;
+  dom.lmTestStatus.textContent = text;
+  dom.lmTestStatus.className = `feedback is-visible ${feedbackClassByType(type)}`;
+}
+
 function feedbackClassByType(type) {
   if (type === 'error') return 'is-error';
   if (type === 'success') return 'is-success';
   return '';
+}
+
+function setButtonBusy(button, isBusy, busyText = '') {
+  if (!button) return;
+
+  if (isBusy) {
+    button.dataset.originalText = button.textContent;
+    button.textContent = busyText;
+    button.disabled = true;
+    return;
+  }
+
+  button.textContent = button.dataset.originalText || button.textContent;
+  button.disabled = false;
+}
+
+function sendRuntimeMessage(message) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(message, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+
+      resolve(response);
+    });
+  });
 }
 
 function toPositiveInteger(value) {

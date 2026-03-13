@@ -96,6 +96,24 @@
             </select>
           </div>
 
+          <div class="settings-row">
+            <label for="full-analysis-policy">Запуск LM Studio</label>
+            <select id="full-analysis-policy">
+              <option value="always">Всегда в hybrid</option>
+              <option value="smart">Только на подозрительных сайтах</option>
+            </select>
+          </div>
+
+          <div class="settings-row">
+            <label for="lm-endpoint">LM Studio endpoint</label>
+            <input id="lm-endpoint" type="url" placeholder="http://127.0.0.1:1234/v1/chat/completions">
+          </div>
+
+          <div class="settings-row">
+            <label for="lm-model">LM Studio model</label>
+            <input id="lm-model" type="text" placeholder="qwen3-4b-2507">
+          </div>
+
           <label class="toggle-row" for="notifications">
             <input id="notifications" type="checkbox" checked>
             <span>Уведомления</span>
@@ -105,6 +123,11 @@
             <input id="logging" type="checkbox" checked>
             <span>Логирование</span>
           </label>
+
+          <div class="settings-actions">
+            <button type="button" id="test-lm-btn">Проверить LM Studio</button>
+            <p id="lm-test-status" class="feedback" aria-live="polite"></p>
+          </div>
 
           <button type="submit" id="save-settings-btn">Сохранить настройки</button>
         </form>

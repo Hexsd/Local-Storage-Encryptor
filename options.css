@@ -442,6 +442,29 @@ button.danger:hover {
   max-width: 190px;
 }
 
+.settings-row input,
+.settings-row select {
+  width: 100%;
+  min-height: 38px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  background: #fffdf8;
+  color: var(--text);
+}
+
+.settings-actions {
+  margin-top: 10px;
+}
+
+#test-lm-btn {
+  width: 100%;
+}
+
+#lm-test-status {
+  margin-top: 8px;
+}
+
 .toggle-row {
   display: flex;
   align-items: center;
@@ -514,7 +537,11 @@ button.danger:hover {
 
 .log-type.info,
 .log-type.system,
-.log-type.auto_encrypt {
+.log-type.auto_encrypt,
+.log-type.request,
+.log-type.lm_response,
+.log-type.lm_verdict,
+.log-type.auto_encrypt_ai {
   background: #efeafd;
   color: var(--accent);
 }

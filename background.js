@@ -1,22 +1,147 @@
-const LM_STUDIO_ENDPOINT = 'http://127.0.0.1:1234/v1/chat/completions';
-const LM_STUDIO_MODEL = 'gpt-4o-mini';
-const LM_STUDIO_TIMEOUT_MS = 15000;
+const DEFAULT_LM_STUDIO_ENDPOINT = 'http://127.0.0.1:1234/v1/chat/completions';
+const DEFAULT_LM_STUDIO_MODEL = 'qwen3-4b-2507';
+const DEFAULT_LM_STUDIO_TIMEOUT_MS = 15000;
+const LOGS_STORAGE_KEY = 'logs';
+const STATS_STORAGE_KEY = 'stats';
+const SETTINGS_STORAGE_KEY = 'settings';
+const MONITORED_SITES_STORAGE_KEY = 'monitoredSites';
+const SITE_DETAILS_PREFIX = 'siteDetails:';
+const MAX_LOGS = 500;
+const MAX_SYNC_ISSUES = 5;
+const MAX_SYNC_ISSUE_LENGTH = 160;
+const MAX_SYNC_REASON_LENGTH = 400;
+const MAX_SYNC_RECOMMENDATION_LENGTH = 240;
+const MAX_PROMPT_ISSUES = 6;
+const MAX_PROMPT_JSON_LENGTH = 3200;
+const DEBUG_STORAGE_KEY = 'debugTrace';
+const MAX_DEBUG_ENTRIES = 200;
+const DEBUG_MODE = true;
+
+chrome.runtime.onInstalled.addListener(() => {
+  void logEvent('Extension installed', 'system');
+  void debugTrace('lifecycle.installed');
+});
+
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  const action = request?.action;
+  void debugTrace('runtime.message.received', {
+    action,
+    senderUrl: getSenderUrl(sender)
+  });
+
+  if (action === 'page_analyzed_full' || action === 'test_lm_studio') {
+    void handleAsyncMessage(request, sender, sendResponse);
+    return true;
+  }
+
+  switch (action) {
+    case 'show_notification':
+      void showNotification(request?.message);
+      break;
+    case 'page_analyzed':
+      void handlePageAnalysis(request).catch((error) =>
+        logEvent(`Page analysis failed: ${error.message}`, 'error', getSenderUrl(sender))
+      );
+      break;
+    case 'log_event':
+      void logEvent(request?.message, request?.type, getSenderUrl(sender));
+      break;
+    default:
+      break;
+  }
+
+  return false;
+});
+
+async function handleAsyncMessage(request, sender, sendResponse) {
+  try {
+    await debugTrace('runtime.message.async.start', {
+      action: request?.action,
+      senderUrl: getSenderUrl(sender)
+    });
+    const data =
+      request?.action === 'test_lm_studio'
+        ? await handleLmStudioTest(request, sender)
+        : await handleFullPageAnalysis(request, sender);
+    await debugTrace('runtime.message.async.success', {
+      action: request?.action,
+      senderUrl: getSenderUrl(sender),
+      url: data?.url,
+      aiDanger: data?.aiDanger
+    });
+    safeSendResponse(sendResponse, { success: true, data });
+  } catch (error) {
+    await debugTrace('runtime.message.async.error', {
+      action: request?.action,
+      senderUrl: getSenderUrl(sender),
+      error: error?.message || String(error)
+    });
+    await logEvent(`Full analysis failed: ${error.message}`, 'error', getSenderUrl(sender));
+    safeSendResponse(sendResponse, { success: false, error: error.message });
+  }
+}
+
+function safeSendResponse(sendResponse, payload) {
+  try {
+    sendResponse(payload);
+    void debugTrace('runtime.message.response.sent', {
+      success: Boolean(payload?.success),
+      error: payload?.error || ''
+    });
+  } catch {
+    // The sender may have already gone away. Logging is not useful here.
+    void debugTrace('runtime.message.response.failed');
+  }
+}
+
+function getSenderUrl(sender) {
+  return sender?.url || sender?.tab?.url || 'background';
+}
+
+async function getStoredSettings() {
+  try {
+    const { [SETTINGS_STORAGE_KEY]: settings = {} } = await chrome.storage.sync.get(SETTINGS_STORAGE_KEY);
+    return settings && typeof settings === 'object' ? settings : {};
+  } catch {
+    return {};
+  }
+}
 
 async function getExtensionSettings() {
+  const settings = await getStoredSettings();
+
+  return {
+    notifications: settings.notifications !== false,
+    logging: settings.logging !== false,
+    mode: settings.mode === 'local' ? 'local' : 'hybrid',
+    lmStudioEndpoint: normalizeEndpoint(settings.lmStudioEndpoint),
+    lmStudioModel: normalizeModel(settings.lmStudioModel),
+    lmStudioTimeoutMs: normalizeTimeout(settings.lmStudioTimeoutMs)
+  };
+}
+
+function normalizeEndpoint(value) {
+  const endpoint = String(value || DEFAULT_LM_STUDIO_ENDPOINT).trim();
+
   try {
-    const { settings = {} } = await chrome.storage.sync.get('settings');
-    return {
-      notifications: settings.notifications !== false,
-      logging: settings.logging !== false,
-      mode: settings.mode || 'hybrid'
-    };
+    const parsed = new URL(endpoint);
+    return parsed.toString();
   } catch {
-    return {
-      notifications: true,
-      logging: true,
-      mode: 'hybrid'
-    };
+    return DEFAULT_LM_STUDIO_ENDPOINT;
   }
+}
+
+function normalizeModel(value) {
+  const model = String(value || DEFAULT_LM_STUDIO_MODEL).trim();
+  return model || DEFAULT_LM_STUDIO_MODEL;
+}
+
+function normalizeTimeout(value) {
+  const timeout = Number(value);
+  if (!Number.isFinite(timeout) || timeout < 1000) {
+    return DEFAULT_LM_STUDIO_TIMEOUT_MS;
+  }
+  return Math.round(timeout);
 }
 
 async function showNotification(message) {
@@ -27,67 +152,495 @@ async function showNotification(message) {
     type: 'basic',
     iconUrl: 'icons/128.png',
     title: 'Local Storage Encryptor',
-    message: message || 'Обнаружен потенциальный риск!'
+    message: String(message || 'Potential risk detected')
   });
 }
 
-chrome.runtime.onInstalled.addListener(() => {
-  void logEvent('Расширение установлено', 'system');
-});
+async function debugTrace(event, payload = null) {
+  if (!DEBUG_MODE) return;
 
+  const entry = {
+    timestamp: Date.now(),
+    event: String(event || 'debug'),
+    payload: sanitizeDebugPayload(payload)
+  };
 
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   try {
-    if (request.action === 'show_notification') {
-      void showNotification(request.message);
-    }
-
-    if (request.action === 'page_analyzed') {
-      handlePageAnalysis(request)
-        .catch(e => void logEvent(`Анализ страницы: ${e.message}`, 'error'));
-    }
-
-    if (request.action === 'page_analyzed_full') {
-      handleFullPageAnalysis(request, sender, sendResponse);
-      return true;
-    }
-
-    if (request.action === 'log_event') {
-      void logEvent(request.message, request.type);
-    }
-  } catch (e) {
-    void logEvent(`Background ошибка: ${e.message}`, 'error');
+    console.log('[LSE debug]', entry.event, entry.payload || '');
+  } catch {
+    // Ignore console failures.
   }
-});
 
-async function logEvent(message, type = 'info') {
+  try {
+    const { [DEBUG_STORAGE_KEY]: debugEntries = [] } = await chrome.storage.local.get(DEBUG_STORAGE_KEY);
+    const nextEntries = Array.isArray(debugEntries) ? debugEntries.slice(-MAX_DEBUG_ENTRIES + 1) : [];
+    nextEntries.push(entry);
+    await chrome.storage.local.set({ [DEBUG_STORAGE_KEY]: nextEntries });
+  } catch (error) {
+    try {
+      console.warn('[LSE debug] failed to persist trace', error);
+    } catch {
+      // Ignore console failures.
+    }
+  }
+}
+
+function sanitizeDebugPayload(value, depth = 0) {
+  if (value === null || value === undefined) return value;
+  if (depth >= 3) return '[max-depth]';
+
+  if (typeof value === 'string') {
+    return truncateText(value, 800);
+  }
+
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.slice(0, 10).map((item) => sanitizeDebugPayload(item, depth + 1));
+  }
+
+  if (typeof value === 'object') {
+    const result = {};
+    for (const [key, nestedValue] of Object.entries(value).slice(0, 20)) {
+      result[key] = sanitizeDebugPayload(nestedValue, depth + 1);
+    }
+    return result;
+  }
+
+  return String(value);
+}
+
+async function logEvent(message, type = 'info', url = 'background') {
   try {
     const { logging } = await getExtensionSettings();
     if (!logging) return;
 
-    const { logs = [] } = await chrome.storage.local.get('logs');
-    logs.push({
+    const { [LOGS_STORAGE_KEY]: logs = [] } = await chrome.storage.local.get(LOGS_STORAGE_KEY);
+    const nextLogs = Array.isArray(logs) ? logs.slice(-MAX_LOGS + 1) : [];
+
+    nextLogs.push({
       timestamp: Date.now(),
-      message,
-      type,
-      url: 'background'
+      message: String(message || ''),
+      type: normalizeLogType(type),
+      url: String(url || 'background')
     });
-    if (logs.length > 500) logs.splice(0, logs.length - 500);
-    await chrome.storage.local.set({ logs });
-  } catch (e) {
-    console.error('Критическая ошибка логирования:', e);
+
+    await chrome.storage.local.set({ [LOGS_STORAGE_KEY]: nextLogs });
+  } catch (error) {
+    console.error('Logging failure:', error);
   }
 }
 
+function normalizeLogType(type) {
+  const normalized = String(type || 'info').trim().toLowerCase();
+  return normalized || 'info';
+}
+
+function normalizeRisk(value) {
+  const risk = String(value || 'low').trim().toLowerCase();
+
+  if (risk === 'critical') return 'critical';
+  if (risk === 'high') return 'high';
+  if (risk === 'medium') return 'medium';
+  return 'low';
+}
+
+function normalizeAiDanger(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+
+  if (normalized === 'critical' || normalized === 'критический') return 'critical';
+  if (normalized === 'high' || normalized === 'высокий') return 'high';
+  if (normalized === 'medium' || normalized === 'средний') return 'medium';
+  if (normalized === 'low' || normalized === 'низкий') return 'low';
+  return '';
+}
+
+function normalizeScore(value) {
+  const score = Number(value);
+  if (!Number.isFinite(score)) return null;
+  return clamp(Math.round(score), 0, 100);
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function sanitizeIssues(value, maxItems = MAX_SYNC_ISSUES, maxLength = MAX_SYNC_ISSUE_LENGTH) {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((item) => truncateText(item, maxLength))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+function truncateText(value, maxLength) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (text.length <= maxLength) return text;
+  if (maxLength <= 3) return text.slice(0, maxLength);
+  return `${text.slice(0, maxLength - 3)}...`;
+}
+
+function getSiteDetailsStorageKey(url) {
+  return `${SITE_DETAILS_PREFIX}${encodeURIComponent(url)}`;
+}
+
+function getBaseSiteRecord(record) {
+  if (!record || typeof record !== 'object') return null;
+
+  const url = String(record.url || '').trim();
+  if (!url) return null;
+
+  return {
+    url,
+    risk: normalizeRisk(record.risk),
+    score: normalizeScore(record.score),
+    issues: sanitizeIssues(record.issues),
+    aiDanger: normalizeAiDanger(record.aiDanger),
+    aiReason: truncateText(record.aiReason, MAX_SYNC_REASON_LENGTH),
+    aiRecommendation: truncateText(record.aiRecommendation, MAX_SYNC_RECOMMENDATION_LENGTH),
+    added: Number.isFinite(Number(record.added)) ? Number(record.added) : Date.now(),
+    updatedAt: Number.isFinite(Number(record.updatedAt)) ? Number(record.updatedAt) : Date.now()
+  };
+}
+
+function mergeSiteRecord(existingRecord, patchRecord) {
+  const base = getBaseSiteRecord(existingRecord) || { url: patchRecord.url, added: patchRecord.added };
+
+  return {
+    ...base,
+    ...patchRecord,
+    added: Number.isFinite(Number(base.added)) ? Number(base.added) : patchRecord.added,
+    updatedAt: Date.now()
+  };
+}
+
+async function getMonitoredSites() {
+  const { [MONITORED_SITES_STORAGE_KEY]: monitoredSites = [] } =
+    await chrome.storage.sync.get(MONITORED_SITES_STORAGE_KEY);
+
+  if (!Array.isArray(monitoredSites)) return [];
+
+  return monitoredSites
+    .map((site) => getBaseSiteRecord(site))
+    .filter(Boolean);
+}
+
+async function saveMonitoredSites(sites) {
+  await debugTrace('storage.sync.save.start', {
+    sitesCount: Array.isArray(sites) ? sites.length : null
+  });
+  await chrome.storage.sync.set({ [MONITORED_SITES_STORAGE_KEY]: sites });
+  await debugTrace('storage.sync.save.success', {
+    sitesCount: Array.isArray(sites) ? sites.length : null
+  });
+  return sites;
+}
+
+async function saveMonitoredSiteSummary(summary) {
+  const sites = await getMonitoredSites();
+  const existingIndex = sites.findIndex((site) => site.url === summary.url);
+  const merged =
+    existingIndex === -1
+      ? summary
+      : mergeSiteRecord(sites[existingIndex], summary);
+
+  const nextSites = existingIndex === -1 ? [...sites, merged] : sites.map((site, index) => (
+    index === existingIndex ? merged : site
+  ));
+
+  try {
+    return await saveMonitoredSites(nextSites);
+  } catch (error) {
+    await debugTrace('storage.sync.save.error', {
+      url: summary.url,
+      error: error?.message || String(error)
+    });
+    const compactSites = nextSites.map((site) => ({
+      url: site.url,
+      risk: site.risk,
+      score: site.score,
+      aiDanger: site.aiDanger,
+      added: site.added,
+      updatedAt: site.updatedAt
+    }));
+
+    await logEvent(`Sync storage is full, saving compact monitored site list: ${error.message}`, 'warn');
+    return saveMonitoredSites(compactSites);
+  }
+}
+
+async function saveSiteDetails(url, payload) {
+  const storageKey = getSiteDetailsStorageKey(url);
+  const detailsRecord = {
+    updatedAt: Date.now(),
+    ...payload
+  };
+
+  await debugTrace('storage.local.details.save.start', {
+    url,
+    storageKey,
+    issuesCount: Array.isArray(payload?.issues) ? payload.issues.length : 0
+  });
+  await chrome.storage.local.set({ [storageKey]: detailsRecord });
+  await debugTrace('storage.local.details.save.success', {
+    url,
+    storageKey
+  });
+}
+
+function buildSiteSummary(data, extra = {}) {
+  const url = String(data?.url || '').trim();
+  if (!url) {
+    throw new Error('Missing analyzed page URL');
+  }
+
+  return getBaseSiteRecord({
+    url,
+    risk: data?.risk,
+    score: data?.score,
+    issues: data?.issues,
+    aiDanger: extra.aiDanger,
+    aiReason: extra.aiReason,
+    aiRecommendation: extra.aiRecommendation,
+    added: extra.added
+  });
+}
+
+async function persistAnalysisResult(data, extra = {}) {
+  const summary = buildSiteSummary(data, extra);
+  await debugTrace('analysis.persist.start', {
+    url: summary.url,
+    source: extra.source || 'heuristic',
+    risk: summary.risk,
+    score: summary.score
+  });
+
+  const tasks = [
+    saveMonitoredSiteSummary(summary),
+    saveSiteDetails(summary.url, {
+      risk: summary.risk,
+      score: summary.score,
+      issues: Array.isArray(data?.issues) ? data.issues : [],
+      details: data?.details || null,
+      aiDanger: normalizeAiDanger(extra.aiDanger),
+      aiReason: String(extra.aiReason || ''),
+      aiRecommendation: String(extra.aiRecommendation || ''),
+      source: extra.source || 'heuristic'
+    })
+  ];
+
+  const [syncResult, localResult] = await Promise.allSettled(tasks);
+  await debugTrace('analysis.persist.done', {
+    url: summary.url,
+    syncStatus: syncResult.status,
+    localStatus: localResult.status
+  });
+
+  if (syncResult.status === 'rejected') {
+    await logEvent(`Failed to save monitored site summary for ${summary.url}: ${syncResult.reason?.message || syncResult.reason}`, 'error');
+  }
+
+  if (localResult.status === 'rejected') {
+    await logEvent(`Failed to save detailed local analysis for ${summary.url}: ${localResult.reason?.message || localResult.reason}`, 'error');
+  }
+
+  const syncedSites = syncResult.status === 'fulfilled' ? syncResult.value : null;
+  await updateStats(summary.risk, syncedSites);
+
+  return summary;
+}
+
+async function handlePageAnalysis(data) {
+  const summary = await persistAnalysisResult(data, { source: 'heuristic' });
+  await debugTrace('analysis.heuristic.stored', {
+    url: summary.url,
+    risk: summary.risk,
+    score: summary.score
+  });
+  await logEvent(`Stored heuristic analysis for ${summary.url}: risk=${summary.risk}, score=${summary.score ?? 'n/a'}`, 'info', summary.url);
+
+  if (data?.encryptedByAI && Number(data?.encryptedCount) > 0) {
+    await logEvent(`Auto encryption confirmed for ${summary.url}: ${data.encryptedCount} records`, 'auto_encrypt_ai', summary.url);
+  }
+}
+
+async function handleFullPageAnalysis(data) {
+  const settings = await getExtensionSettings();
+  const url = String(data?.url || '').trim();
+
+  if (!url) {
+    throw new Error('Missing analyzed page URL');
+  }
+
+  await persistAnalysisResult(data, { source: 'heuristic' });
+  await debugTrace('analysis.full.requested', {
+    url,
+    mode: settings.mode,
+    endpoint: settings.lmStudioEndpoint,
+    model: settings.lmStudioModel
+  });
+  await logEvent(`Full analysis requested for ${url}: mode=${settings.mode}, risk=${normalizeRisk(data?.risk)}, score=${normalizeScore(data?.score) ?? 'n/a'}`, 'info', url);
+
+  if (settings.mode === 'local') {
+    await debugTrace('analysis.full.local_mode', { url });
+    return buildFullResponse(data, {
+      aiDanger: 'low',
+      aiReason: '',
+      aiRecommendation: ''
+    });
+  }
+
+  let aiAssessment = null;
+  try {
+    aiAssessment = await askLmStudioAboutSite(data, settings);
+    await debugTrace('analysis.full.lm.success', {
+      url,
+      aiDanger: aiAssessment?.danger || ''
+    });
+    await logEvent(`LM Studio response parsed for ${url}: aiDanger=${aiAssessment.danger}`, 'lm_verdict', url);
+  } catch (error) {
+    await debugTrace('analysis.full.lm.error', {
+      url,
+      error: error?.message || String(error)
+    });
+    await logEvent(`LM Studio request failed for ${url}: ${error.message}`, 'error', url);
+  }
+
+  const aiDanger = aiAssessment?.danger || 'low';
+  const aiReason = aiAssessment?.reason || '';
+  const aiRecommendation = aiAssessment?.recommendation || '';
+
+  await persistAnalysisResult(data, {
+    source: aiAssessment ? 'lm_studio' : 'heuristic_fallback',
+    aiDanger,
+    aiReason,
+    aiRecommendation
+  });
+
+  return buildFullResponse(data, {
+    aiDanger,
+    aiReason,
+    aiRecommendation
+  });
+}
+
+function buildFullResponse(data, extra) {
+  return {
+    url: String(data?.url || ''),
+    risk: normalizeRisk(data?.risk),
+    score: normalizeScore(data?.score),
+    issues: Array.isArray(data?.issues) ? data.issues : [],
+    details: data?.details || null,
+    aiDanger: normalizeAiDanger(extra?.aiDanger) || 'low',
+    aiReason: String(extra?.aiReason || ''),
+    aiRecommendation: String(extra?.aiRecommendation || '')
+  };
+}
+
+function buildPromptDetailsSummary(details) {
+  if (!details || typeof details !== 'object') return '';
+
+  const summary = {
+    version: details.version || null,
+    observationMs: details.observationMs || null,
+    probeReady: Boolean(details.probeReady),
+    probeErrors: Number(details.probeErrors) || 0,
+    components: details.components || null,
+    metrics: {
+      storage: details.metrics?.storage
+        ? {
+            localWrites: details.metrics.storage.localWrites,
+            localReads: details.metrics.storage.localReads,
+            sensitiveKeyWrites: details.metrics.storage.sensitiveKeyWrites,
+            highEntropyWrites: details.metrics.storage.highEntropyWrites,
+            largeValueWrites: details.metrics.storage.largeValueWrites,
+            sensitiveHighEntropyWrites: details.metrics.storage.sensitiveHighEntropyWrites,
+            writeBurst1s: details.metrics.storage.writeBurst1s
+          }
+        : null,
+      network: details.metrics?.network
+        ? {
+            totalRequests: details.metrics.network.totalRequests,
+            crossOriginRequests: details.metrics.network.crossOriginRequests,
+            requestsAfterStorageEvent: details.metrics.network.requestsAfterStorageEvent,
+            requestsAfterSensitiveWrite: details.metrics.network.requestsAfterSensitiveWrite,
+            encodedPayloadRequests: details.metrics.network.encodedPayloadRequests,
+            unrelatedRequests: details.metrics.network.unrelatedRequests,
+            apiRequests: details.metrics.network.apiRequests,
+            unrelatedApiRequests: details.metrics.network.unrelatedApiRequests,
+            mutatingRequests: details.metrics.network.mutatingRequests,
+            mutatingAfterSensitiveWrite: details.metrics.network.mutatingAfterSensitiveWrite,
+            uniqueHosts: details.metrics.network.uniqueHosts,
+            unrelatedHosts: details.metrics.network.unrelatedHosts
+          }
+        : null,
+      activity: details.metrics?.activity
+        ? {
+            fastTimeoutRegistrations: details.metrics.activity.fastTimeoutRegistrations,
+            fastIntervalRegistrations: details.metrics.activity.fastIntervalRegistrations,
+            beforeUnloadListeners: details.metrics.activity.beforeUnloadListeners,
+            unloadListeners: details.metrics.activity.unloadListeners,
+            hiddenStorageOps: details.metrics.activity.hiddenStorageOps,
+            hiddenNetworkRequests: details.metrics.activity.hiddenNetworkRequests,
+            mutationRatePerSec: details.metrics.activity.mutationRatePerSec
+          }
+        : null
+    },
+    hotKeys: Array.isArray(details.hotKeys) ? details.hotKeys.slice(0, 4) : [],
+    hotDomains: Array.isArray(details.hotDomains) ? details.hotDomains.slice(0, 4) : []
+  };
+
+  const serialized = JSON.stringify(summary);
+  if (serialized.length <= MAX_PROMPT_JSON_LENGTH) {
+    return serialized;
+  }
+
+  return `${serialized.slice(0, MAX_PROMPT_JSON_LENGTH)}...`;
+}
+
+function buildLmStudioPrompt(data) {
+  const issues = sanitizeIssues(data?.issues, MAX_PROMPT_ISSUES, 220);
+  const detailsSummary = buildPromptDetailsSummary(data?.details);
+
+  return [
+    'You are a web security analyst.',
+    'Assess whether the site behavior looks malicious, suspicious, or normal.',
+    'Always include exactly one line in the answer: Danger: high, Danger: medium, or Danger: low.',
+    '',
+    `URL: ${String(data?.url || '')}`,
+    `Heuristic risk: ${normalizeRisk(data?.risk)}`,
+    `Heuristic score: ${normalizeScore(data?.score) ?? 'n/a'}`,
+    `Top issues: ${issues.length > 0 ? issues.join('; ') : 'none'}`,
+    `Behavior summary: ${detailsSummary || 'none'}`,
+    '',
+    'After the danger line, give a short reason in plain text.'
+  ].join('\n');
+}
+
 function extractLmText(payload) {
-  const direct = payload?.choices?.[0]?.message?.content;
-  if (typeof direct === 'string') return direct;
-  if (Array.isArray(direct)) {
-    return direct
-      .map(item => (typeof item?.text === 'string' ? item.text : ''))
+  const choice = payload?.choices?.[0];
+  if (!choice || typeof choice !== 'object') return '';
+
+  const directMessage = choice.message?.content;
+  if (typeof directMessage === 'string') return directMessage.trim();
+
+  if (Array.isArray(directMessage)) {
+    return directMessage
+      .map((item) => {
+        if (typeof item === 'string') return item;
+        if (typeof item?.text === 'string') return item.text;
+        if (typeof item?.content === 'string') return item.content;
+        return '';
+      })
       .join('')
       .trim();
   }
+
+  if (typeof choice.text === 'string') return choice.text.trim();
   return '';
 }
 
@@ -95,311 +648,245 @@ function parseDangerLevel(text) {
   const lower = String(text || '').toLowerCase();
 
   if (
-    lower.includes('уровень опасности: high') ||
-    lower.includes('опасность: high') ||
     lower.includes('danger: high') ||
     lower.includes('risk: high') ||
-    lower.includes('высокий риск') ||
-    lower.includes('очень опасн')
+    lower.includes('уровень опасности: high') ||
+    lower.includes('опасность: high') ||
+    lower.includes('высокий риск')
   ) {
-    return 'высокий';
+    return 'high';
   }
 
   if (
-    lower.includes('уровень опасности: medium') ||
-    lower.includes('опасность: medium') ||
     lower.includes('danger: medium') ||
     lower.includes('risk: medium') ||
+    lower.includes('уровень опасности: medium') ||
+    lower.includes('опасность: medium') ||
     lower.includes('средний риск')
   ) {
-    return 'средний';
+    return 'medium';
   }
 
-  if (
-    lower.includes('уровень опасности: low') ||
-    lower.includes('опасность: low') ||
-    lower.includes('danger: low') ||
-    lower.includes('risk: low') ||
-    lower.includes('низкий риск')
-  ) {
-    return 'низкий';
-  }
-
-  return 'низкий';
+  return 'low';
 }
 
-async function askLmStudioAboutSite(data) {
-  const { url, risk, score, issues, details } = data;
-
-  const prompt = `
-Ты – эксперт по информационной безопасности.
-Определи уровень опасности сайта и кратко объясни.
-
-Тебе даны:
-- URL: ${url}
-- Риск по эвристике: ${risk}
-- Суммарный балл риска: ${score}
-- Проблемы: ${(issues || []).join('; ')}
-- Доп. детали: ${JSON.stringify(details || {})}
-
-Ответь СВОБОДНЫМ текстом, но обязательно явно укажи строку вида:
-"Уровень опасности: high" или "Уровень опасности: medium" или "Уровень опасности: low".
-После этого можешь кратко объяснить, почему.
-`;
-
-  await logEvent(
-    `LM Studio запрос: endpoint=${LM_STUDIO_ENDPOINT}, model=${LM_STUDIO_MODEL}, url=${url}, риск=${risk}, счет=${score}`,
-    'request'
-  );
-
-  const body = {
-    model: LM_STUDIO_MODEL,
+async function askLmStudioAboutSite(data, settings) {
+  const endpoint = normalizeEndpoint(settings?.lmStudioEndpoint);
+  const model = normalizeModel(settings?.lmStudioModel);
+  const timeoutMs = normalizeTimeout(settings?.lmStudioTimeoutMs);
+  const prompt = buildLmStudioPrompt(data);
+  const requestBody = {
+    model,
+    temperature: 0.2,
     messages: [
       {
         role: 'system',
         content:
-          'Ты помощник по безопасности веб-сайтов. Всегда явно пиши строку "Уровень опасности: high|medium|low".'
+          'You analyze browser security signals. Always include one line formatted exactly as Danger: high|medium|low.'
       },
-      { role: 'user', content: prompt }
-    ],
-    temperature: 0.3
+      {
+        role: 'user',
+        content: prompt
+      }
+    ]
   };
 
+  await logEvent(`LM Studio request started: endpoint=${endpoint}, model=${model}`, 'request', String(data?.url || 'background'));
+  await debugTrace('lm.request.start', {
+    url: data?.url,
+    endpoint,
+    model,
+    timeoutMs,
+    promptPreview: prompt.slice(0, 500)
+  });
+
   const abortController = new AbortController();
-  const timeoutId = setTimeout(() => abortController.abort(), LM_STUDIO_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => abortController.abort(), timeoutMs);
 
   let response;
   try {
-    response = await fetch(LM_STUDIO_ENDPOINT, {
+    response = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(requestBody),
       signal: abortController.signal
+    });
+    await debugTrace('lm.request.fetch_resolved', {
+      url: data?.url,
+      ok: response.ok,
+      status: response.status,
+      statusText: response.statusText
     });
   } catch (error) {
     if (error?.name === 'AbortError') {
-      throw new Error(`LM Studio не ответил за ${LM_STUDIO_TIMEOUT_MS}мс`);
+      await debugTrace('lm.request.abort', {
+        url: data?.url,
+        timeoutMs
+      });
+      throw new Error(`LM Studio did not answer within ${timeoutMs}ms`);
     }
-    throw new Error(`Ошибка сети LM Studio: ${error.message}`);
+
+    await debugTrace('lm.request.fetch_error', {
+      url: data?.url,
+      name: error?.name || '',
+      message: error?.message || String(error),
+      stack: error?.stack || ''
+    });
+    throw new Error(`LM Studio network error: ${error.message}`);
   } finally {
     clearTimeout(timeoutId);
   }
 
+  const rawText = await response.text().catch(() => '');
+  await debugTrace('lm.request.response_text', {
+    url: data?.url,
+    status: response.status,
+    bodyPreview: rawText.slice(0, 500)
+  });
+
   if (!response.ok) {
-    const errorBody = (await response.text().catch(() => '')).slice(0, 300);
-    throw new Error(`LM Studio HTTP ${response.status}${errorBody ? `: ${errorBody}` : ''}`);
+    throw new Error(`LM Studio HTTP ${response.status}${rawText ? `: ${rawText.slice(0, 300)}` : ''}`);
   }
 
-  let dataResp;
+  let payload;
   try {
-    dataResp = await response.json();
+    payload = rawText ? JSON.parse(rawText) : {};
   } catch {
-    throw new Error('LM Studio вернул не-JSON ответ');
+    throw new Error(`LM Studio returned non-JSON response: ${rawText.slice(0, 300)}`);
   }
 
-  const text = extractLmText(dataResp);
-  if (!text.trim()) {
-    throw new Error('LM Studio вернул пустой ответ');
+  const text = extractLmText(payload);
+  if (!text) {
+    throw new Error(`LM Studio returned an empty completion: ${rawText.slice(0, 300)}`);
   }
 
-  await logEvent(
-    `Ответ LM Studio для ${url}: ${text.slice(0, 400)}`,
-    'lm_response'
-  );
-
-  const danger = parseDangerLevel(text);
-
-  const reason = text.slice(0, 400);
-
-  await logEvent(
-    `LM Studio: уровень опасности - ${danger}`,
-    'lm_parsed'
-  );
+  await debugTrace('lm.request.parsed', {
+    url: data?.url,
+    danger: parseDangerLevel(text),
+    textPreview: text.slice(0, 400)
+  });
+  await logEvent(`LM Studio raw response: ${truncateText(text, 400)}`, 'lm_response', String(data?.url || 'background'));
 
   return {
-    danger,
-    reason,
+    danger: parseDangerLevel(text),
+    reason: truncateText(text, 400),
     recommendation: ''
   };
 }
 
-async function handlePageAnalysis(data) {
-  const { url, risk, score, issues, details, encryptedByAI, encryptedCount } = data;
+async function handleLmStudioTest(request, sender) {
+  const settings = await getExtensionSettings();
+  const endpoint = normalizeEndpoint(request?.endpoint || settings.lmStudioEndpoint);
+  const model = normalizeModel(request?.model || settings.lmStudioModel);
+  const timeoutMs = normalizeTimeout(request?.timeoutMs || settings.lmStudioTimeoutMs);
 
-  const { monitoredSites = [] } = await chrome.storage.sync.get('monitoredSites');
-  const existingIndex = monitoredSites.findIndex(site => site.url === url);
+  await debugTrace('lm.test.start', {
+    endpoint,
+    model,
+    timeoutMs,
+    senderUrl: getSenderUrl(sender)
+  });
 
-  let siteInfo = {
-    url,
-    risk,
-    score,
-    issues: issues || [],
-    details: details || null,
-    added: existingIndex === -1 ? Date.now() : (monitoredSites[existingIndex].added || Date.now())
+  const result = await askLmStudioAboutSite(
+    {
+      url: 'chrome-extension://lm-test',
+      risk: 'medium',
+      score: 50,
+      issues: ['Manual connectivity test from options page'],
+      details: {
+        version: 'lm-test',
+        observationMs: 0,
+        probeReady: true,
+        probeErrors: 0,
+        components: null,
+        metrics: null,
+        hotKeys: [],
+        hotDomains: []
+      }
+    },
+    {
+      lmStudioEndpoint: endpoint,
+      lmStudioModel: model,
+      lmStudioTimeoutMs: timeoutMs
+    }
+  );
+
+  await debugTrace('lm.test.success', {
+    endpoint,
+    model,
+    danger: result?.danger || ''
+  });
+
+  return {
+    ok: true,
+    endpoint,
+    model,
+    timeoutMs,
+    danger: result?.danger || 'low',
+    reason: result?.reason || ''
   };
-
-  if (existingIndex === -1) {
-    monitoredSites.push(siteInfo);
-    await logEvent(`Добавлен новый сайт в мониторинг: ${url}`, 'info');
-  } else {
-    monitoredSites[existingIndex] = { ...monitoredSites[existingIndex], ...siteInfo };
-    await logEvent(`Обновлены данные сайта: ${url}`, 'info');
-  }
-  await chrome.storage.sync.set({ monitoredSites });
-
-  await updateStats(risk);
-
-  if (encryptedByAI && encryptedCount > 0) {
-    await logEvent(
-      `Подтверждено авто-шифрование по вердикту ИИ: ${encryptedCount} записей для ${url}`,
-      'auto_encrypt_ai'
-    );
-  }
 }
 
-async function handleFullPageAnalysis(data, sender, sendResponse) {
-  const { url, risk, score, issues, details } = data;
-
-  try {
-    await logEvent(
-      `Полный анализ: url=${url}, угроза - ${risk}, счет - ${score}`,
-      'info'
-    );
-
-    const { monitoredSites = [] } = await chrome.storage.sync.get('monitoredSites');
-    const existingIndex = monitoredSites.findIndex(site => site.url === url);
-
-    let siteInfo = {
-      url,
-      risk,
-      score,
-      issues: issues || [],
-      details: details || null,
-      added: existingIndex === -1 ? Date.now() : (monitoredSites[existingIndex].added || Date.now())
-    };
-
-    if (existingIndex === -1) {
-      monitoredSites.push(siteInfo);
-      await logEvent(`добавлен новый сайт ${url}`, 'info');
-    } else {
-      monitoredSites[existingIndex] = { ...monitoredSites[existingIndex], ...siteInfo };
-      await logEvent(`обновлён сайт ${url}`, 'info');
-    }
-    await chrome.storage.sync.set({ monitoredSites });
-    await updateStats(risk);
-
-    const { settings = {} } = await chrome.storage.sync.get('settings');
-    const mode = settings.mode || 'hybrid';
-
-    if (mode === 'local') {
-      await logEvent(`Локальный режим анализа для ${url}`, 'info');
-      sendResponse({
-        success: true,
-        data: {
-          url,
-          risk,
-          score,
-          issues: issues || [],
-          details: details || null,
-          aiDanger: 'низкий',
-          aiReason: '',
-          aiRecommendation: ''
-        }
-      });
-      return;
-    }
-
-    await logEvent(`Полный анализ для ${url}`, 'info');
-
-    let aiAssessment = null;
-    try {
-      aiAssessment = await askLmStudioAboutSite(data);
-    } catch (e) {
-      await logEvent(`Ошибка полного анализа для ${url}: ${e.message}`, 'error');
-    }
-
-    let aiDanger = 'низкий';
-    let aiReason = '';
-    let aiRecommendation = '';
-
-    if (aiAssessment) {
-      aiDanger = aiAssessment.danger || 'низкий';
-      aiReason = aiAssessment.reason || '';
-      aiRecommendation = aiAssessment.recommendation || '';
-
-      await logEvent(
-        `Полный анализ: Вердикт ИИ для ${url}: уровень опасности - ${aiDanger}`,
-        'lm_verdict'
-      );
-
-      const { monitoredSites: sitesAfterAI = [] } = await chrome.storage.sync.get('monitoredSites');
-      const idx = sitesAfterAI.findIndex(site => site.url === url);
-      const target = idx === -1
-        ? { url, added: Date.now() }
-        : sitesAfterAI[idx];
-
-      const updatedSite = {
-        ...target,
-        risk,
-        score,
-        issues: issues || [],
-        details: details || null,
-        aiDanger,
-        aiReason,
-        aiRecommendation
-      };
-
-      if (idx === -1) {
-        sitesAfterAI.push(updatedSite);
-      } else {
-        sitesAfterAI[idx] = updatedSite;
-      }
-
-      await chrome.storage.sync.set({ monitoredSites: sitesAfterAI });
-    }
-
-    sendResponse({
-      success: true,
-      data: {
-        url,
-        risk,
-        score,
-        issues: issues || [],
-        details: details || null,
-        aiDanger,
-        aiReason,
-        aiRecommendation
-      }
-    });
-  } catch (e) {
-    await logEvent(`Полный анализ: ошибка обработки для ${url}: ${e.message}`, 'error');
-    sendResponse({ success: false, error: e.message });
-  }
-}
-
-async function updateStats(currentRisk) {
+async function updateStats(currentRisk, monitoredSites) {
   const today = new Date().toISOString().split('T')[0];
-  const { stats = {} } = await chrome.storage.local.get('stats');
+  const { [STATS_STORAGE_KEY]: statsValue = {} } = await chrome.storage.local.get(STATS_STORAGE_KEY);
+  const stats = statsValue && typeof statsValue === 'object' ? { ...statsValue } : {};
 
   if (stats.lastDate !== today) {
     stats.threatsToday = 0;
     stats.lastDate = today;
   }
 
-  if (currentRisk !== 'low') {
+  if (normalizeRisk(currentRisk) !== 'low') {
     stats.threatsToday = (stats.threatsToday || 0) + 1;
     stats.threatsMonth = (stats.threatsMonth || 0) + 1;
   }
 
-  const { monitoredSites = [] } = await chrome.storage.sync.get('monitoredSites');
-  stats.sitesCount = monitoredSites.length;
+  const safeSites = Array.isArray(monitoredSites) ? monitoredSites : await getMonitoredSites();
+  stats.sitesCount = safeSites.length;
 
-  if (monitoredSites.length > 0) {
-    const avgScore = monitoredSites.reduce((sum, site) => sum + (site.score || 0), 0) / monitoredSites.length;
+  if (safeSites.length > 0) {
+    const avgScore = safeSites.reduce((sum, site) => sum + getSiteScore(site), 0) / safeSites.length;
     stats.securityIndex = Math.max(0, Math.round(100 - Math.min(avgScore, 100)));
   } else {
     stats.securityIndex = 100;
   }
 
-  await chrome.storage.local.set({ stats });
+  await chrome.storage.local.set({ [STATS_STORAGE_KEY]: stats });
 }
+
+function getSiteScore(site) {
+  const numericScore = normalizeScore(site?.score);
+  if (numericScore !== null) {
+    return numericScore;
+  }
+
+  switch (normalizeRisk(site?.risk)) {
+    case 'critical':
+      return 90;
+    case 'high':
+      return 70;
+    case 'medium':
+      return 40;
+    default:
+      return 0;
+  }
+}
+
+self.addEventListener('unhandledrejection', (event) => {
+  void debugTrace('worker.unhandledrejection', {
+    reason: event?.reason?.message || String(event?.reason || '')
+  });
+});
+
+self.addEventListener('error', (event) => {
+  void debugTrace('worker.error', {
+    message: event?.message || '',
+    filename: event?.filename || '',
+    lineno: event?.lineno || 0,
+    colno: event?.colno || 0
+  });
+});

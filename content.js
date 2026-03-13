@@ -590,10 +590,34 @@ async function isProtectionEnabled() {
     return settings.protectionEnabled !== false;
 }
 
-async function logToExtension(message, type = 'info') {
-    if (chrome.runtime?.sendMessage) {
-        chrome.runtime.sendMessage({ action: 'log_event', message, type }).catch(() => {});
+function isRuntimeMessageAvailable() {
+    return Boolean(chrome?.runtime?.id && chrome.runtime?.sendMessage);
+}
+
+function isIgnorableRuntimeError(error) {
+    const message = String(error?.message || error || '');
+    return (
+        message.includes('Extension context invalidated') ||
+        message.includes('Receiving end does not exist') ||
+        message.includes('The message port closed before a response was received')
+    );
+}
+
+async function sendRuntimeMessageQuietly(payload) {
+    if (!isRuntimeMessageAvailable()) return null;
+
+    try {
+        return await chrome.runtime.sendMessage(payload);
+    } catch (error) {
+        if (isIgnorableRuntimeError(error)) {
+            return null;
+        }
+        throw error;
     }
+}
+
+async function logToExtension(message, type = 'info') {
+    await sendRuntimeMessageQuietly({ action: 'log_event', message, type });
 }
 
 async function getEncryptionPassphrase() {
@@ -1094,6 +1118,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 function requestFullAnalysis(analysis) {
     return new Promise((resolve, reject) => {
+        if (!isRuntimeMessageAvailable()) {
+            reject(new Error('Контекст расширения недоступен'));
+            return;
+        }
+
         try {
             chrome.runtime.sendMessage(
                 {
@@ -1103,7 +1132,12 @@ function requestFullAnalysis(analysis) {
                 },
                 (response) => {
                     if (chrome.runtime.lastError) {
-                        reject(new Error(chrome.runtime.lastError.message));
+                        const runtimeError = new Error(chrome.runtime.lastError.message);
+                        if (isIgnorableRuntimeError(runtimeError)) {
+                            reject(new Error('Контекст расширения был перезагружен'));
+                            return;
+                        }
+                        reject(runtimeError);
                         return;
                     }
                     if (!response || !response.success) {
@@ -1150,8 +1184,9 @@ function shouldReportAnalysis(analysis, reasons, now) {
     return now - analysisState.lastReportedAt >= FORCE_REPORT_INTERVAL_MS;
 }
 
-function shouldRunFullAnalysis(mode, analysis, reasons, now) {
+function shouldRunFullAnalysis(mode, analysis, reasons, now, policy) {
     if (mode === 'local') return false;
+    if (policy === 'always') return true;
     if (analysis.risk === 'high') return true;
 
     const sinceLastFull = now - analysisState.lastFullRunAt;
@@ -1182,7 +1217,7 @@ function resetRuntimeSignalWindow() {
 }
 
 async function runAnalysisCycle() {
-    if (!chrome.runtime?.sendMessage) return;
+    if (!isRuntimeMessageAvailable()) return;
     if (analysisState.inFlight) {
         analysisState.pending = true;
         return;
@@ -1219,23 +1254,24 @@ async function runAnalysisCycle() {
         const { settings = {} } = await chrome.storage.sync.get('settings');
         const mode = settings.mode || 'hybrid';
         const autoEncrypt = settings.autoEncrypt !== false;
+        const fullAnalysisPolicy = settings.fullAnalysisPolicy || 'always';
 
         if (mode === 'local') {
-            chrome.runtime.sendMessage({
+            await sendRuntimeMessageQuietly({
                 action: 'page_analyzed',
                 url: window.location.origin,
                 ...analysis
             });
 
             if (analysis.risk === 'high' && autoEncrypt) {
-                chrome.runtime.sendMessage({
+                await sendRuntimeMessageQuietly({
                     action: 'log_event',
                     message: 'Локальный режим анализа, запускаю авто-шифрование',
                     type: 'auto_encrypt'
                 });
                 const result = await safeEncryptAll();
                 if (result.count > 0) {
-                    chrome.runtime.sendMessage({
+                    await sendRuntimeMessageQuietly({
                         action: 'show_notification',
                         message: `Зашифровано ${result.count} записей`
                     });
@@ -1246,9 +1282,9 @@ async function runAnalysisCycle() {
                 }
             }
         } else {
-            const runFull = shouldRunFullAnalysis(mode, analysis, reasons, now);
+            const runFull = shouldRunFullAnalysis(mode, analysis, reasons, now, fullAnalysisPolicy);
             if (!runFull) {
-                chrome.runtime.sendMessage({
+                await sendRuntimeMessageQuietly({
                     action: 'page_analyzed',
                     url: window.location.origin,
                     ...analysis
@@ -1269,7 +1305,7 @@ async function runAnalysisCycle() {
                 if (autoEncrypt && full.aiDanger === 'высокий') {
                     const result = await safeEncryptAll();
                     if (result.count > 0) {
-                        chrome.runtime.sendMessage({
+                        await sendRuntimeMessageQuietly({
                             action: 'show_notification',
                             message: `Сайт признан опасным. Зашифровано ${result.count} записей (Полный анализ)`
                         });
