@@ -110,6 +110,18 @@ h1 {
   background: var(--surface);
 }
 
+.card-threats {
+  position: relative;
+  overflow: hidden;
+  border-color: #d8cff8;
+  background: var(--surface);
+  box-shadow: 0 18px 40px -34px rgba(119, 89, 255, 0.75);
+}
+
+.card-threats::after {
+  content: none;
+}
+
 .card-head {
   margin-bottom: 12px;
 }
@@ -403,20 +415,105 @@ button.danger:hover {
   color: var(--risk);
 }
 
+.stats-visual {
+  position: relative;
+  margin-top: 12px;
+  padding: 14px 12px 12px;
+  border: 1px solid rgba(119, 89, 255, 0.14);
+  background: var(--surface);
+}
+
+.stats-visual[data-empty="true"] .chart-bar {
+  box-shadow: none;
+}
+
+.stats-chart {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: end;
+  height: 168px;
+}
+
+.chart-col {
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  gap: 10px;
+  min-width: 0;
+  text-align: center;
+}
+
+.chart-value {
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--accent);
+}
+
+.chart-track {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  min-height: 108px;
+  padding: 0 10px;
+  border-bottom: 1px solid rgba(119, 89, 255, 0.2);
+}
+
+.chart-track::before {
+  content: "";
+  position: absolute;
+  inset: 0 10px 0;
+  background:
+    linear-gradient(to top, rgba(119, 89, 255, 0.07) 0 1px, transparent 1px 33%),
+    linear-gradient(to top, rgba(119, 89, 255, 0.07) 0 1px, transparent 1px 66%);
+  pointer-events: none;
+}
+
+.chart-bar {
+  position: relative;
+  width: 100%;
+  max-width: 56px;
+  height: 8%;
+  min-height: 12px;
+  border-radius: 0;
+  background: var(--accent);
+  box-shadow: 0 16px 26px -16px rgba(119, 89, 255, 0.88);
+  transition:
+    height 0.55s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.35s ease,
+    box-shadow 0.35s ease;
+}
+
+.chart-bar::after {
+  content: none;
+}
+
+.chart-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
 .stats-grid {
   display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
+  margin-top: 12px;
 }
 
 .stat-tile {
   display: flex;
+  flex-direction: column;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
-  min-height: 42px;
-  padding: 8px 10px;
+  min-height: 82px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
-  background: #faf9ff;
+  background: var(--surface);
 }
 
 .tile-label {
@@ -679,6 +776,40 @@ button.danger:hover {
 
   .card-head--row {
     flex-direction: column;
+  }
+
+  .stats-chart,
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .stats-chart {
+    height: auto;
+  }
+
+  .chart-col {
+    grid-template-columns: 64px 1fr 72px;
+    grid-template-rows: none;
+    align-items: center;
+    gap: 12px;
+    text-align: left;
+  }
+
+  .chart-track {
+    min-height: 72px;
+    padding: 10px 0 0;
+  }
+
+  .chart-track::before {
+    inset: 10px 0 0;
+  }
+
+  .chart-bar {
+    max-width: none;
+  }
+
+  .chart-label {
+    text-align: right;
   }
 }
 

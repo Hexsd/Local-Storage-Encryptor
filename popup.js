@@ -25,6 +25,7 @@ function cacheDom() {
 
 function bindEvents() {
   dom.encryptBtn.addEventListener('click', () => {
+    recordOperation('popup_encrypt');
     runTabAction({
       button: dom.encryptBtn,
       loadingText: 'Шифруем...',
@@ -35,6 +36,7 @@ function bindEvents() {
   });
 
   dom.decryptBtn.addEventListener('click', () => {
+    recordOperation('popup_decrypt');
     runTabAction({
       button: dom.decryptBtn,
       loadingText: 'Расшифровываем...',
@@ -44,8 +46,14 @@ function bindEvents() {
     });
   });
 
-  dom.exportBtn.addEventListener('click', exportData);
-  dom.optionsBtn.addEventListener('click', () => chrome.runtime.openOptionsPage());
+  dom.exportBtn.addEventListener('click', () => {
+    recordOperation('popup_export');
+    exportData();
+  });
+  dom.optionsBtn.addEventListener('click', () => {
+    recordOperation('popup_options');
+    chrome.runtime.openOptionsPage();
+  });
   dom.saveKeyBtn.addEventListener('click', saveEncryptionKey);
   dom.encryptionKeyInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
@@ -194,4 +202,15 @@ function showStatus(message, type) {
     dom.status.textContent = '';
     statusTimer = null;
   }, STATUS_TIMEOUT_MS);
+}
+
+function recordOperation(operation) {
+  try {
+    chrome.runtime.sendMessage({
+      action: 'record_operation',
+      operation
+    });
+  } catch {
+    // Ignore telemetry failures in popup interactions.
+  }
 }

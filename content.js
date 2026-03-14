@@ -620,6 +620,10 @@ async function logToExtension(message, type = 'info') {
     await sendRuntimeMessageQuietly({ action: 'log_event', message, type });
 }
 
+async function recordOperation(operation) {
+    await sendRuntimeMessageQuietly({ action: 'record_operation', operation });
+}
+
 async function getEncryptionPassphrase() {
     const stored = await chrome.storage.local.get(ENCRYPTION_KEY_STORAGE);
     const passphrase = stored?.[ENCRYPTION_KEY_STORAGE];
@@ -1271,6 +1275,7 @@ async function runAnalysisCycle() {
                 });
                 const result = await safeEncryptAll();
                 if (result.count > 0) {
+                    await recordOperation('auto_encrypt');
                     await sendRuntimeMessageQuietly({
                         action: 'show_notification',
                         message: `Зашифровано ${result.count} записей`
@@ -1305,6 +1310,7 @@ async function runAnalysisCycle() {
                 if (autoEncrypt && full.aiDanger === 'высокий') {
                     const result = await safeEncryptAll();
                     if (result.count > 0) {
+                        await recordOperation('auto_encrypt_ai');
                         await sendRuntimeMessageQuietly({
                             action: 'show_notification',
                             message: `Сайт признан опасным. Зашифровано ${result.count} записей (Полный анализ)`

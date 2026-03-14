@@ -68,13 +68,38 @@
 
       <section class="card card-threats" data-animate>
         <h2>Статистика угроз</h2>
+        <div class="stats-visual" id="stats-chart" aria-hidden="true">
+          <div class="stats-chart">
+            <div class="chart-col">
+              <strong class="chart-value" id="chart-value-today">0</strong>
+              <div class="chart-track">
+                <div class="chart-bar" id="chart-bar-today"></div>
+              </div>
+              <span class="chart-label">Today</span>
+            </div>
+            <div class="chart-col">
+              <strong class="chart-value" id="chart-value-month">0</strong>
+              <div class="chart-track">
+                <div class="chart-bar" id="chart-bar-month"></div>
+              </div>
+              <span class="chart-label">Month</span>
+            </div>
+            <div class="chart-col">
+              <strong class="chart-value" id="chart-value-sites">0</strong>
+              <div class="chart-track">
+                <div class="chart-bar" id="chart-bar-sites"></div>
+              </div>
+              <span class="chart-label">Sites</span>
+            </div>
+          </div>
+        </div>
         <div class="stats-grid">
           <div class="stat-tile">
-            <span class="tile-label">За сегодня</span>
+            <span class="tile-label">Операций сегодня</span>
             <strong id="threats-today" aria-live="polite">0</strong>
           </div>
           <div class="stat-tile">
-            <span class="tile-label">За месяц</span>
+            <span class="tile-label">Операций за месяц</span>
             <strong id="threats-month" aria-live="polite">0</strong>
           </div>
           <div class="stat-tile">
@@ -92,27 +117,32 @@
             <label for="mode-select">Режим анализа</label>
             <select id="mode-select">
               <option value="local">Локальный</option>
-              <option value="hybrid">ML (гибридный)</option>
+              <option value="hybrid">Гибридный (с использованием нейросети)</option>
             </select>
           </div>
 
           <div class="settings-row">
-            <label for="full-analysis-policy">Запуск LM Studio</label>
+            <label for="full-analysis-policy">Запуск гибридного анализа</label>
             <select id="full-analysis-policy">
-              <option value="always">Всегда в hybrid</option>
+              <option value="always">Всегда в гибридном режиме</option>
               <option value="smart">Только на подозрительных сайтах</option>
             </select>
           </div>
-
           <div class="settings-row">
-            <label for="lm-endpoint">LM Studio endpoint</label>
+            <label for="lm-endpoint">API вашей нейросети</label>
             <input id="lm-endpoint" type="url" placeholder="http://127.0.0.1:1234/v1/chat/completions">
           </div>
 
+          <div class="settings-actions">
+            <button type="button" id="test-lm-btn">Проверить доступ к API</button>
+            <p id="lm-test-status" class="feedback" aria-live="polite"></p>
+          </div>
+<!--
           <div class="settings-row">
             <label for="lm-model">LM Studio model</label>
             <input id="lm-model" type="text" placeholder="qwen3-4b-2507">
           </div>
+           -->
 
           <label class="toggle-row" for="notifications">
             <input id="notifications" type="checkbox" checked>
@@ -123,11 +153,6 @@
             <input id="logging" type="checkbox" checked>
             <span>Логирование</span>
           </label>
-
-          <div class="settings-actions">
-            <button type="button" id="test-lm-btn">Проверить LM Studio</button>
-            <p id="lm-test-status" class="feedback" aria-live="polite"></p>
-          </div>
 
           <button type="submit" id="save-settings-btn">Сохранить настройки</button>
         </form>

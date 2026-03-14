@@ -27,6 +27,13 @@ function cacheDom() {
   dom.threatsToday = document.getElementById('threats-today');
   dom.threatsMonth = document.getElementById('threats-month');
   dom.sitesMonitored = document.getElementById('sites-monitored');
+  dom.statsChart = document.getElementById('stats-chart');
+  dom.chartValueToday = document.getElementById('chart-value-today');
+  dom.chartValueMonth = document.getElementById('chart-value-month');
+  dom.chartValueSites = document.getElementById('chart-value-sites');
+  dom.chartBarToday = document.getElementById('chart-bar-today');
+  dom.chartBarMonth = document.getElementById('chart-bar-month');
+  dom.chartBarSites = document.getElementById('chart-bar-sites');
 
   dom.securityScore = document.getElementById('security-score');
   dom.securityProgress = document.querySelector('.progress');
@@ -41,7 +48,6 @@ function cacheDom() {
   dom.logging = document.getElementById('logging');
   dom.settingsForm = document.getElementById('settings-form');
   dom.saveSettingsBtn = document.getElementById('save-settings-btn');
-  dom.saveSettingsBtn.dataset.baseLabel = dom.saveSettingsBtn.textContent;
   dom.testLmBtn = document.getElementById('test-lm-btn');
   dom.lmTestStatus = document.getElementById('lm-test-status');
 
@@ -50,19 +56,23 @@ function cacheDom() {
 
   dom.protectionToggle = document.getElementById('protection-toggle');
   dom.protectionState = document.getElementById('protection-state');
+
+  if (dom.saveSettingsBtn) {
+    dom.saveSettingsBtn.dataset.baseLabel = dom.saveSettingsBtn.textContent;
+  }
 }
 
 function bindEvents() {
-  dom.addSiteBtn.addEventListener('click', addSite);
-  dom.siteInput.addEventListener('keydown', onSiteInputKeyDown);
-  dom.siteInput.addEventListener('input', onSiteInputChanged);
+  dom.addSiteBtn?.addEventListener('click', addSite);
+  dom.siteInput?.addEventListener('keydown', onSiteInputKeyDown);
+  dom.siteInput?.addEventListener('input', onSiteInputChanged);
 
-  dom.sitesList.addEventListener('click', onSitesListClick);
+  dom.sitesList?.addEventListener('click', onSitesListClick);
 
-  dom.settingsForm.addEventListener('submit', saveSettings);
-  dom.testLmBtn.addEventListener('click', testLmStudioConnection);
-  dom.clearLogsBtn.addEventListener('click', clearLogs);
-  dom.protectionToggle.addEventListener('click', toggleProtection);
+  dom.settingsForm?.addEventListener('submit', saveSettings);
+  dom.testLmBtn?.addEventListener('click', testLmStudioConnection);
+  dom.clearLogsBtn?.addEventListener('click', clearLogs);
+  dom.protectionToggle?.addEventListener('click', toggleProtection);
 }
 
 function bindStorageTriggers() {
@@ -209,12 +219,18 @@ async function loadStats() {
     chrome.storage.sync.get('monitoredSites')
   ]);
   const safeSites = monitoredSites.filter((site) => site && typeof site.url === 'string' && site.url.trim());
-
-  dom.threatsToday.textContent = String(toPositiveInteger(stats.threatsToday));
-  dom.threatsMonth.textContent = String(toPositiveInteger(stats.threatsMonth));
-
+  const threatsToday = getOperationCountForDisplay(stats, 'day');
+  const threatsMonth = getOperationCountForDisplay(stats, 'month');
   const sitesCount = safeSites.length;
+
+  dom.threatsToday.textContent = String(threatsToday);
+  dom.threatsMonth.textContent = String(threatsMonth);
   dom.sitesMonitored.textContent = String(sitesCount);
+  updateStatsChart([
+    { value: threatsToday, valueNode: dom.chartValueToday, barNode: dom.chartBarToday },
+    { value: threatsMonth, valueNode: dom.chartValueMonth, barNode: dom.chartBarMonth },
+    { value: sitesCount, valueNode: dom.chartValueSites, barNode: dom.chartBarSites }
+  ]);
 
   const indexSource = sitesCount === 0 ? 100 : stats.securityIndex ?? 100;
   const index = clamp(toPositiveInteger(indexSource), 0, 100);
@@ -227,6 +243,61 @@ async function loadStats() {
   dom.riskDesc.textContent = `Уровень риска: ${risk.text}.`;
 }
 
+function updateStatsChart(items) {
+  if (!Array.isArray(items) || items.length === 0) return;
+
+  const maxValue = items.reduce((currentMax, item) => Math.max(currentMax, Number(item?.value) || 0), 0);
+  const safeMax = maxValue > 0 ? maxValue : 1;
+
+  if (dom.statsChart) {
+    dom.statsChart.dataset.empty = maxValue === 0 ? 'true' : 'false';
+  }
+
+  items.forEach(({ value, valueNode, barNode }) => {
+    const numericValue = Math.max(0, Number(value) || 0);
+    const normalizedHeight =
+      numericValue === 0
+        ? 8
+        : Math.max(18, Math.round((numericValue / safeMax) * 100));
+
+    if (valueNode) {
+      valueNode.textContent = String(numericValue);
+    }
+
+    if (barNode) {
+      barNode.style.height = `${normalizedHeight}%`;
+      barNode.style.opacity = numericValue === 0 ? '0.35' : '1';
+    }
+  });
+}
+
+function getOperationCountForDisplay(stats, period) {
+  const safeStats = stats && typeof stats === 'object' ? stats : {};
+
+  if (period === 'month') {
+    return safeStats.operationsLastMonth === getLocalMonthKey()
+      ? toPositiveInteger(safeStats.operationsMonth)
+      : 0;
+  }
+
+  return safeStats.operationsLastDate === getLocalDateKey()
+    ? toPositiveInteger(safeStats.operationsToday)
+    : 0;
+}
+
+function getLocalDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getLocalMonthKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+}
+
 async function loadSettings() {
   const { settings = {} } = await chrome.storage.sync.get('settings');
 
@@ -235,9 +306,11 @@ async function loadSettings() {
   dom.lmEndpoint.value = typeof settings.lmStudioEndpoint === 'string' && settings.lmStudioEndpoint.trim()
     ? settings.lmStudioEndpoint
     : DEFAULT_LM_ENDPOINT;
-  dom.lmModel.value = typeof settings.lmStudioModel === 'string' && settings.lmStudioModel.trim()
-    ? settings.lmStudioModel
-    : DEFAULT_LM_MODEL;
+  if (dom.lmModel) {
+    dom.lmModel.value = typeof settings.lmStudioModel === 'string' && settings.lmStudioModel.trim()
+      ? settings.lmStudioModel
+      : DEFAULT_LM_MODEL;
+  }
   dom.notifications.checked = settings.notifications !== false;
   dom.logging.checked = settings.logging !== false;
 
@@ -380,7 +453,7 @@ async function saveSettings(event) {
 
   const { settings = {} } = await chrome.storage.sync.get('settings');
   const lmEndpoint = dom.lmEndpoint.value.trim() || DEFAULT_LM_ENDPOINT;
-  const lmModel = dom.lmModel.value.trim() || DEFAULT_LM_MODEL;
+  const lmModel = getLmModelValue();
 
   const newSettings = {
     ...settings,
@@ -400,7 +473,7 @@ async function saveSettings(event) {
 
 async function testLmStudioConnection() {
   const endpoint = dom.lmEndpoint.value.trim() || DEFAULT_LM_ENDPOINT;
-  const model = dom.lmModel.value.trim() || DEFAULT_LM_MODEL;
+  const model = getLmModelValue();
 
   setButtonBusy(dom.testLmBtn, true, 'Проверяем...');
   showLmTestStatus('Проверяем подключение к LM Studio...', 'info');
@@ -429,6 +502,7 @@ async function testLmStudioConnection() {
 }
 
 function flashSaveButton() {
+  if (!dom.saveSettingsBtn) return;
   const baseLabel = dom.saveSettingsBtn.dataset.baseLabel || 'Сохранить настройки';
 
   if (saveButtonTimer) {
@@ -621,6 +695,10 @@ function setButtonBusy(button, isBusy, busyText = '') {
 
   button.textContent = button.dataset.originalText || button.textContent;
   button.disabled = false;
+}
+
+function getLmModelValue() {
+  return dom.lmModel?.value?.trim() || DEFAULT_LM_MODEL;
 }
 
 function sendRuntimeMessage(message) {
