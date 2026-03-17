@@ -2,16 +2,45 @@ const FEEDBACK_TIMEOUT_MS = 2600;
 const VISIBLE_LOGS_LIMIT = 50;
 const DEFAULT_LM_ENDPOINT = 'http://127.0.0.1:1234/v1/chat/completions';
 const DEFAULT_LM_MODEL = 'qwen3-4b-2507';
-const ALLOWED_LOG_TYPES = new Set(['error', 'warn', 'info', 'system', 'auto_encrypt', 'request', 'lm_response', 'lm_verdict', 'auto_encrypt_ai']);
+const LOG_LEVELS = new Set(['info', 'success', 'warn', 'error']);
+const LOG_CATEGORIES = new Set(['analysis', 'encryption', 'ai', 'settings', 'data', 'system']);
+const LOG_CATEGORY_FILTERS = [
+  { key: 'all', label: 'Все' },
+  { key: 'encryption', label: 'Шифрование' },
+  { key: 'analysis', label: 'Анализ' },
+  { key: 'ai', label: 'AI' },
+  { key: 'settings', label: 'Настройки' },
+  { key: 'data', label: 'Данные' },
+  { key: 'system', label: 'Система' }
+];
+const LOG_CATEGORY_META = {
+  encryption: { label: 'Шифрование', tone: 'encryption' },
+  analysis: { label: 'Анализ', tone: 'analysis' },
+  ai: { label: 'AI', tone: 'ai' },
+  settings: { label: 'Настройки', tone: 'settings' },
+  data: { label: 'Данные', tone: 'data' },
+  system: { label: 'Система', tone: 'system' }
+};
+const LOG_LEVEL_META = {
+  info: { label: 'Информация', tone: 'info' },
+  success: { label: 'Успех', tone: 'success' },
+  warn: { label: 'Предупреждение', tone: 'warn' },
+  error: { label: 'Ошибка', tone: 'error' }
+};
 
 const dom = {};
 let feedbackTimer = null;
 let saveButtonTimer = null;
+const activeLogFilters = {
+  category: 'all',
+  level: 'all'
+};
 
 document.addEventListener('DOMContentLoaded', init);
 
 async function init() {
   cacheDom();
+  renderLogCategoryFilters();
   bindEvents();
   bindStorageTriggers();
 
@@ -53,6 +82,10 @@ function cacheDom() {
 
   dom.logsList = document.getElementById('logs-list');
   dom.clearLogsBtn = document.getElementById('clear-logs-btn');
+  dom.logCategoryFilters = document.getElementById('log-category-filters');
+  dom.logLevelFilter = document.getElementById('log-level-filter');
+  dom.logsSummary = document.getElementById('logs-summary');
+  dom.logsCounter = document.getElementById('logs-counter');
 
   dom.protectionToggle = document.getElementById('protection-toggle');
   dom.protectionState = document.getElementById('protection-state');
@@ -73,6 +106,41 @@ function bindEvents() {
   dom.testLmBtn?.addEventListener('click', testLmStudioConnection);
   dom.clearLogsBtn?.addEventListener('click', clearLogs);
   dom.protectionToggle?.addEventListener('click', toggleProtection);
+  dom.logCategoryFilters?.addEventListener('click', onLogCategoryFilterClick);
+  dom.logLevelFilter?.addEventListener('change', onLogLevelFilterChange);
+}
+
+function renderLogCategoryFilters() {
+  if (!dom.logCategoryFilters) return;
+
+  dom.logCategoryFilters.replaceChildren();
+
+  LOG_CATEGORY_FILTERS.forEach((filter) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = `log-filter-chip${filter.key === activeLogFilters.category ? ' is-active' : ''}`;
+    button.dataset.category = filter.key;
+    button.textContent = filter.label;
+    dom.logCategoryFilters.appendChild(button);
+  });
+
+  if (dom.logLevelFilter) {
+    dom.logLevelFilter.value = activeLogFilters.level;
+  }
+}
+
+function onLogCategoryFilterClick(event) {
+  const button = event.target.closest('[data-category]');
+  if (!button?.dataset.category) return;
+
+  activeLogFilters.category = button.dataset.category;
+  renderLogCategoryFilters();
+  void loadLogs();
+}
+
+function onLogLevelFilterChange() {
+  activeLogFilters.level = dom.logLevelFilter?.value || 'all';
+  void loadLogs();
 }
 
 function bindStorageTriggers() {
@@ -338,10 +406,15 @@ async function toggleProtection() {
 
   updateProtectionUi(nextState);
 
-  chrome.runtime.sendMessage({
-    action: 'log_event',
-    message: nextState ? 'Защита включена' : 'Защита отключена',
-    type: 'system'
+  await sendLog({
+    category: 'settings',
+    level: 'info',
+    event: 'protection_toggled',
+    title: nextState ? 'Защита включена' : 'Защита отключена',
+    message: nextState
+      ? 'Мониторинг и автоматическая защита снова активны.'
+      : 'Мониторинг временно остановлен пользователем.',
+    source: 'options'
   });
 }
 
@@ -352,6 +425,7 @@ async function loadLogs() {
   if (!loggingEnabled) {
     dom.logsList.replaceChildren();
     dom.clearLogsBtn.disabled = true;
+    updateLogsSummary(0, 0);
     appendEmptyState(dom.logsList, 'Логирование отключено в настройках.');
     return;
   }
@@ -359,47 +433,75 @@ async function loadLogs() {
   const { logs = [] } = await chrome.storage.local.get('logs');
   dom.logsList.replaceChildren();
 
-  const recentLogs = logs.slice(-VISIBLE_LOGS_LIMIT).reverse();
-  dom.clearLogsBtn.disabled = recentLogs.length === 0;
+  const normalizedLogs = Array.isArray(logs)
+    ? logs
+        .map((log) => normalizeStoredLog(log))
+        .filter(Boolean)
+        .sort((left, right) => right.timestamp - left.timestamp)
+    : [];
+  const filteredLogs = normalizedLogs.filter((log) => matchesLogFilters(log));
+  const displayedLogs = filteredLogs.slice(0, VISIBLE_LOGS_LIMIT);
 
-  if (recentLogs.length === 0) {
-    appendEmptyState(dom.logsList, 'Логи пока пусты');
+  dom.clearLogsBtn.disabled = normalizedLogs.length === 0;
+  updateLogsSummary(displayedLogs.length, filteredLogs.length, normalizedLogs.length);
+
+  if (normalizedLogs.length === 0) {
+    appendEmptyState(dom.logsList, 'Журнал пока пуст.');
     return;
   }
 
-  recentLogs.forEach((log) => {
+  if (filteredLogs.length === 0) {
+    appendEmptyState(dom.logsList, 'По текущим фильтрам событий не найдено.');
+    return;
+  }
+
+  displayedLogs.forEach((log) => {
     dom.logsList.appendChild(createLogEntry(log));
   });
 }
 
 function createLogEntry(log) {
   const entry = document.createElement('div');
-  entry.className = 'log-entry';
+  entry.className = `log-entry tone-${log.level}`;
 
-  const messageLine = document.createElement('div');
-  messageLine.className = 'log-message';
+  const head = document.createElement('div');
+  head.className = 'log-head';
 
-  const type = normalizeLogType(log.type);
-  const typeBadge = document.createElement('span');
-  typeBadge.className = `log-type ${type}`;
-  typeBadge.textContent = type.toUpperCase().replace('_', ' ');
-
-  const messageText = document.createTextNode(String(log.message ?? 'Без сообщения'));
-  messageLine.append(typeBadge, messageText);
-
-  const details = document.createElement('div');
-  details.className = 'log-details';
+  const badges = document.createElement('div');
+  badges.className = 'log-badges';
+  badges.append(
+    createLogBadge(getLogCategoryMeta(log.category).label, `tone-${getLogCategoryMeta(log.category).tone}`),
+    createLogBadge(getLogLevelMeta(log.level).label, `tone-${getLogLevelMeta(log.level).tone}`),
+    createLogBadge(describeLogSource(log), 'tone-source')
+  );
 
   const time = document.createElement('span');
   time.className = 'log-time';
   time.textContent = formatTimestamp(log.timestamp);
 
-  const url = document.createElement('span');
-  url.className = 'log-url';
-  url.textContent = log.url || 'background';
+  head.append(badges, time);
 
-  details.append(time, url);
-  entry.append(messageLine, details);
+  const title = document.createElement('h3');
+  title.className = 'log-title';
+  title.textContent = log.title || 'Событие';
+
+  const message = document.createElement('p');
+  message.className = 'log-message';
+  message.textContent = log.message || 'Без описания.';
+
+  const meta = document.createElement('div');
+  meta.className = 'log-details';
+
+  const location = document.createElement('span');
+  location.className = 'log-url';
+  location.textContent = describeLogLocation(log);
+  meta.appendChild(location);
+
+  if (log.context && Object.keys(log.context).length > 0) {
+    meta.appendChild(createLogContext(log.context));
+  }
+
+  entry.append(head, title, message, meta);
 
   return entry;
 }
@@ -426,6 +528,15 @@ async function addSite() {
   safeSites.push({ url: normalizedUrl, risk: 'low', added: Date.now() });
   await chrome.storage.sync.set({ monitoredSites: safeSites });
   await syncStatsBySites(safeSites);
+  await sendLog({
+    category: 'settings',
+    level: 'success',
+    event: 'site_added',
+    title: 'Сайт добавлен в мониторинг',
+    message: 'Новый сайт будет участвовать в автоматическом анализе.',
+    source: 'options',
+    url: normalizedUrl
+  });
 
   dom.siteInput.value = '';
   dom.siteInput.classList.remove('is-invalid');
@@ -443,6 +554,15 @@ async function removeSite(url) {
 
   await chrome.storage.sync.set({ monitoredSites: filtered });
   await syncStatsBySites(filtered);
+  await sendLog({
+    category: 'settings',
+    level: 'info',
+    event: 'site_removed',
+    title: 'Сайт удалён из мониторинга',
+    message: 'Сайт больше не будет автоматически отслеживаться.',
+    source: 'options',
+    url
+  });
   showSiteFeedback('Сайт удалён из списка.', 'success');
 
   await Promise.all([loadSites(), loadStats()]);
@@ -467,6 +587,20 @@ async function saveSettings(event) {
   };
 
   await chrome.storage.sync.set({ settings: newSettings });
+  await sendLog({
+    category: 'settings',
+    level: 'success',
+    event: 'settings_saved',
+    title: 'Настройки сохранены',
+    message: 'Параметры анализа и уведомлений обновлены.',
+    source: 'options',
+    context: {
+      mode: newSettings.mode,
+      policy: newSettings.fullAnalysisPolicy,
+      logging: newSettings.logging,
+      notifications: newSettings.notifications
+    }
+  });
   flashSaveButton();
   showLmTestStatus('Настройки LM Studio сохранены.', 'success');
 }
@@ -490,11 +624,31 @@ async function testLmStudioConnection() {
     }
 
     const result = response.data;
+    await sendLog({
+      category: 'ai',
+      level: 'success',
+      event: 'lm_connection_test_success',
+      title: 'Проверка LM Studio успешна',
+      message: 'Тестовый запрос к LM Studio завершился успешно.',
+      source: 'options',
+      context: {
+        model: result.model,
+        verdict: normalizeAiDanger(result.danger) || result.danger
+      }
+    });
     showLmTestStatus(
       `LM Studio отвечает. Модель: ${result.model}. Вердикт: ${normalizeAiDanger(result.danger) || result.danger}.`,
       'success'
     );
   } catch (error) {
+    await sendLog({
+      category: 'ai',
+      level: 'error',
+      event: 'lm_connection_test_failed',
+      title: 'Проверка LM Studio завершилась ошибкой',
+      message: error.message,
+      source: 'options'
+    });
     showLmTestStatus(`Ошибка LM Studio: ${error.message}`, 'error');
   } finally {
     setButtonBusy(dom.testLmBtn, false);
@@ -577,9 +731,287 @@ function getRiskByIndex(index) {
   return { key: 'low', text: 'низкий' };
 }
 
-function normalizeLogType(type) {
-  const normalized = String(type || 'info').toLowerCase().replace('-', '_');
-  return ALLOWED_LOG_TYPES.has(normalized) ? normalized : 'info';
+function createLogBadge(text, toneClass) {
+  const badge = document.createElement('span');
+  badge.className = `log-badge ${toneClass}`;
+  badge.textContent = text;
+  return badge;
+}
+
+function createLogContext(context) {
+  const container = document.createElement('div');
+  container.className = 'log-context';
+
+  Object.entries(context).forEach(([key, value]) => {
+    const item = document.createElement('span');
+    item.className = 'log-context-item';
+    item.textContent = `${getContextLabel(key)}: ${formatContextValue(key, value)}`;
+    container.appendChild(item);
+  });
+
+  return container;
+}
+
+function updateLogsSummary(displayedCount, filteredCount, totalCount = filteredCount) {
+  if (dom.logsCounter) {
+    dom.logsCounter.textContent = String(displayedCount);
+  }
+
+  if (!dom.logsSummary) return;
+
+  if (totalCount === 0) {
+    dom.logsSummary.textContent = 'Журнал пуст.';
+    return;
+  }
+
+  if (filteredCount === 0) {
+    dom.logsSummary.textContent = 'По текущим фильтрам событий нет.';
+    return;
+  }
+
+  if (filteredCount === totalCount && displayedCount === filteredCount) {
+    dom.logsSummary.textContent = `Показаны все события: ${totalCount}.`;
+    return;
+  }
+
+  if (filteredCount !== totalCount && displayedCount === filteredCount) {
+    dom.logsSummary.textContent = `Показано ${filteredCount} из ${totalCount} событий после фильтрации.`;
+    return;
+  }
+
+  if (filteredCount !== totalCount) {
+    dom.logsSummary.textContent = `Показано ${displayedCount} из ${filteredCount} отфильтрованных событий. Всего в журнале ${totalCount}.`;
+    return;
+  }
+
+  dom.logsSummary.textContent = `Показано ${displayedCount} из ${totalCount} событий.`;
+}
+
+function matchesLogFilters(log) {
+  if (activeLogFilters.category !== 'all' && log.category !== activeLogFilters.category) {
+    return false;
+  }
+
+  if (activeLogFilters.level !== 'all' && log.level !== activeLogFilters.level) {
+    return false;
+  }
+
+  return true;
+}
+
+function normalizeStoredLog(log) {
+  if (!log || typeof log !== 'object') return null;
+
+  const type = normalizeLegacyLogType(log.type || log.level || 'info');
+  const level = normalizeLogLevel(log.level || type);
+  const category = normalizeLogCategory(log.category || inferLogCategory(type, log.message || log.title));
+  const event = normalizeLogEvent(log.event || type);
+  const title = String(log.title || inferLogTitle(category, level, event, log.message || '')).trim();
+  const message = String(log.message || title || 'Без описания').trim();
+  const url = String(log.url || 'background').trim() || 'background';
+
+  return {
+    id: String(log.id || `${Number(log.timestamp) || Date.now()}-${event || 'log'}`),
+    timestamp: Number(log.timestamp) || Date.now(),
+    level,
+    category,
+    event,
+    title,
+    message,
+    url,
+    source: normalizeLogSource(log.source, url),
+    context: normalizeLogContext(log.context)
+  };
+}
+
+function normalizeLegacyLogType(type) {
+  return String(type || 'info').trim().toLowerCase().replace(/-/g, '_');
+}
+
+function normalizeLogLevel(value) {
+  const normalized = normalizeLegacyLogType(value);
+  if (LOG_LEVELS.has(normalized)) return normalized;
+  if (normalized === 'warning') return 'warn';
+  if (normalized === 'auto_encrypt' || normalized === 'auto_encrypt_ai' || normalized === 'manual_encrypt' || normalized === 'manual_decrypt' || normalized === 'export') {
+    return 'success';
+  }
+  return normalized === 'error' ? 'error' : normalized === 'warn' ? 'warn' : 'info';
+}
+
+function normalizeLogCategory(value) {
+  const normalized = normalizeLegacyLogType(value);
+  return LOG_CATEGORIES.has(normalized) ? normalized : 'system';
+}
+
+function normalizeLogEvent(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function normalizeLogSource(value, url = 'background') {
+  const normalized = normalizeLegacyLogType(value);
+  if (normalized === 'background' || normalized === 'site' || normalized === 'popup' || normalized === 'options' || normalized === 'extension') {
+    return normalized;
+  }
+
+  if (!url || url === 'background') return 'background';
+  if (!String(url).startsWith('chrome-extension://')) return 'site';
+  if (String(url).endsWith('/popup.html')) return 'popup';
+  if (String(url).endsWith('/options.html')) return 'options';
+  return 'extension';
+}
+
+function normalizeLogContext(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+
+  const entries = Object.entries(value).filter(([, nested]) => nested !== undefined && nested !== null);
+  if (entries.length === 0) return null;
+
+  return Object.fromEntries(
+    entries.map(([key, nested]) => [String(key), typeof nested === 'string' ? nested : String(nested)])
+  );
+}
+
+function inferLogCategory(type, message = '') {
+  const normalizedType = normalizeLegacyLogType(type);
+  const text = String(message || '').toLowerCase();
+
+  if (
+    normalizedType === 'auto_encrypt' ||
+    normalizedType === 'auto_encrypt_ai' ||
+    normalizedType === 'manual_encrypt' ||
+    normalizedType === 'manual_decrypt' ||
+    text.includes('шифр') ||
+    text.includes('дешиф')
+  ) {
+    return 'encryption';
+  }
+
+  if (normalizedType === 'request' || normalizedType === 'lm_response' || normalizedType === 'lm_verdict' || text.includes('lm studio')) {
+    return 'ai';
+  }
+
+  if (normalizedType === 'export' || text.includes('экспорт')) {
+    return 'data';
+  }
+
+  if (text.includes('настро') || text.includes('защит')) {
+    return 'settings';
+  }
+
+  if (text.includes('анализ') || text.includes('risk') || text.includes('score')) {
+    return 'analysis';
+  }
+
+  return 'system';
+}
+
+function inferLogTitle(category, level, event, message = '') {
+  const eventTitles = {
+    extension_installed: 'Расширение установлено',
+    heuristic_analysis_saved: 'Эвристический анализ сохранён',
+    auto_encrypt_confirmed: 'Подтверждено авто-шифрование',
+    hybrid_analysis_requested: 'Запущен гибридный анализ',
+    lm_request_started: 'Запрос к LM Studio отправлен',
+    lm_verdict_received: 'Получен AI-вердикт',
+    lm_request_failed: 'Ошибка LM Studio'
+  };
+
+  if (eventTitles[event]) return eventTitles[event];
+
+  const byCategory = {
+    encryption: { error: 'Ошибка шифрования', warn: 'Событие шифрования', success: 'Шифрование выполнено', info: 'Событие шифрования' },
+    analysis: { error: 'Ошибка анализа', warn: 'Анализ требует внимания', success: 'Анализ завершён', info: 'Событие анализа' },
+    ai: { error: 'Ошибка AI-анализа', warn: 'AI требует внимания', success: 'AI-событие', info: 'AI-событие' },
+    settings: { error: 'Ошибка настроек', warn: 'Настройки изменены', success: 'Настройки обновлены', info: 'Событие настроек' },
+    data: { error: 'Ошибка данных', warn: 'Операция с данными', success: 'Данные обработаны', info: 'Событие данных' },
+    system: { error: 'Системная ошибка', warn: 'Системное предупреждение', success: 'Системное событие', info: 'Системное событие' }
+  };
+
+  return byCategory[category]?.[level] || String(message || 'Событие');
+}
+
+function getLogCategoryMeta(category) {
+  return LOG_CATEGORY_META[category] || LOG_CATEGORY_META.system;
+}
+
+function getLogLevelMeta(level) {
+  return LOG_LEVEL_META[level] || LOG_LEVEL_META.info;
+}
+
+function describeLogSource(log) {
+  switch (log.source) {
+    case 'popup':
+      return 'Popup';
+    case 'options':
+      return 'Настройки';
+    case 'site':
+      return 'Сайт';
+    case 'extension':
+      return 'Расширение';
+    default:
+      return 'Service Worker';
+  }
+}
+
+function describeLogLocation(log) {
+  const url = String(log.url || '').trim();
+  if (!url || url === 'background') return 'Источник: service worker';
+
+  if (url.startsWith('chrome-extension://')) {
+    if (url.endsWith('/popup.html')) return 'Источник: popup расширения';
+    if (url.endsWith('/options.html')) return 'Источник: страница настроек';
+    return 'Источник: внутренняя страница расширения';
+  }
+
+  try {
+    const parsed = new URL(url);
+    return `Сайт: ${parsed.host}${parsed.pathname === '/' ? '' : parsed.pathname}`;
+  } catch {
+    return `Источник: ${url}`;
+  }
+}
+
+function getContextLabel(key) {
+  const labels = {
+    count: 'Количество',
+    skipped: 'Пропущено',
+    mode: 'Режим',
+    policy: 'Политика',
+    logging: 'Логи',
+    notifications: 'Уведомления',
+    model: 'Модель',
+    verdict: 'Вердикт',
+    risk: 'Риск',
+    score: 'Счёт',
+    triggers: 'Триггеры',
+    trigger: 'Причина',
+    endpoint: 'API',
+    reason: 'Причина',
+    key: 'Ключ',
+    size: 'Размер',
+    site: 'Сайт',
+    danger: 'Опасность',
+    aiDanger: 'Вердикт AI',
+    sender: 'Источник'
+  };
+
+  return labels[key] || key;
+}
+
+function formatContextValue(key, value) {
+  if (key === 'logging' || key === 'notifications') {
+    return String(value) === 'true' ? 'вкл' : 'выкл';
+  }
+
+  if (key === 'risk' || key === 'danger' || key === 'aiDanger' || key === 'verdict') {
+    return normalizeAiDanger(value) || String(value);
+  }
+
+  return String(value);
 }
 
 function formatTimestamp(timestamp) {
@@ -712,6 +1144,14 @@ function sendRuntimeMessage(message) {
       resolve(response);
     });
   });
+}
+
+async function sendLog(entry) {
+  try {
+    await sendRuntimeMessage({ action: 'log_event', ...entry });
+  } catch (error) {
+    console.error('Не удалось записать событие журнала:', error);
+  }
 }
 
 function toPositiveInteger(value) {

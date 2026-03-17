@@ -275,7 +275,6 @@ function getBaseDomain(hostname) {
     const safeHost = String(hostname || '').toLowerCase();
     if (!safeHost) return '';
 
-    // Keep IP addresses as-is to avoid false "related domain" matches.
     if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(safeHost) || safeHost.includes(':')) {
         return safeHost;
     }
@@ -616,8 +615,13 @@ async function sendRuntimeMessageQuietly(payload) {
     }
 }
 
-async function logToExtension(message, type = 'info') {
-    await sendRuntimeMessageQuietly({ action: 'log_event', message, type });
+async function logToExtension(entry, type = 'info') {
+    if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+        await sendRuntimeMessageQuietly({ action: 'log_event', ...entry });
+        return;
+    }
+
+    await sendRuntimeMessageQuietly({ action: 'log_event', message: entry, type });
 }
 
 async function recordOperation(operation) {
@@ -700,7 +704,14 @@ async function decryptValue(encryptedBase64) {
         );
         return new TextDecoder().decode(decrypted);
     } catch (e) {
-        await logToExtension(`Расшифровка: ${e.message}`, 'error');
+        await logToExtension({
+            category: 'encryption',
+            level: 'error',
+            event: 'decrypt_value_failed',
+            title: 'Не удалось расшифровать значение',
+            message: e.message,
+            url: window.location.origin
+        });
         throw e;
     }
 }
@@ -1013,7 +1024,14 @@ async function analyze() {
 
 async function safeEncryptAll() {
     if (!(await isProtectionEnabled())) {
-        await logToExtension('Авто-шифрование пропущено: защита отключена', 'info');
+        await logToExtension({
+            category: 'encryption',
+            level: 'warn',
+            event: 'auto_encrypt_skipped',
+            title: 'Авто-шифрование пропущено',
+            message: 'Защита отключена, поэтому автоматическое шифрование не запускалось.',
+            url: window.location.origin
+        });
         return { count: 0, skipped: 0, disabled: true };
     }
 
@@ -1037,7 +1055,18 @@ async function safeEncryptAll() {
             count++;
         } catch (e) {
             skipped++;
-            await logToExtension(`Шифрование "${key}": ${e.message}`, 'error');
+            await logToExtension({
+                category: 'encryption',
+                level: 'error',
+                event: 'encrypt_key_failed',
+                title: 'Ошибка шифрования записи',
+                message: `Не удалось зашифровать ключ "${key}".`,
+                url: window.location.origin,
+                context: {
+                    key,
+                    reason: e.message
+                }
+            });
         }
     }
     return { count, skipped };
@@ -1061,7 +1090,18 @@ async function safeDecryptAll() {
             localStorage.removeItem(key);
             count++;
         } catch (e) {
-            await logToExtension(`Дешифрование "${key}": ${e.message}`, 'error');
+            await logToExtension({
+                category: 'encryption',
+                level: 'error',
+                event: 'decrypt_key_failed',
+                title: 'Ошибка расшифровки записи',
+                message: `Не удалось расшифровать ключ "${key}".`,
+                url: window.location.origin,
+                context: {
+                    key,
+                    reason: e.message
+                }
+            });
         }
     }
     return { count };
@@ -1092,28 +1132,57 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         try {
             if (request.action === 'encrypt') {
                 const res = await safeEncryptAll();
-                await logToExtension(
-                    `Ручное шифрование по кнопке: количество полей - ${res.count}, пропущенных - ${res.skipped}`,
-                    'manual_encrypt'
-                );
+                await logToExtension({
+                    category: 'encryption',
+                    level: 'success',
+                    event: 'manual_encrypt_completed',
+                    title: 'Ручное шифрование завершено',
+                    message: `Зашифровано ${res.count} записей, пропущено ${res.skipped}.`,
+                    url: window.location.origin,
+                    context: {
+                        count: res.count,
+                        skipped: res.skipped
+                    }
+                });
                 sendResponse({ success: true, ...res });
             } else if (request.action === 'decrypt') {
                 const res = await safeDecryptAll();
-                await logToExtension(
-                    `Ручная расшифровка по кнопке: количество полей - ${res.count}`,
-                    'manual_decrypt'
-                );
+                await logToExtension({
+                    category: 'encryption',
+                    level: 'success',
+                    event: 'manual_decrypt_completed',
+                    title: 'Ручная расшифровка завершена',
+                    message: `Расшифровано ${res.count} записей.`,
+                    url: window.location.origin,
+                    context: {
+                        count: res.count
+                    }
+                });
                 sendResponse({ success: true, ...res });
             } else if (request.action === 'export') {
                 const data = await safeExport();
-                await logToExtension(
-                    `Экспорт данных localStorage (${window.location.origin}), длина - ${data.length}`,
-                    'export'
-                );
+                await logToExtension({
+                    category: 'data',
+                    level: 'success',
+                    event: 'export_completed',
+                    title: 'Экспорт localStorage подготовлен',
+                    message: 'Данные собраны и готовы к сохранению в файл.',
+                    url: window.location.origin,
+                    context: {
+                        size: data.length
+                    }
+                });
                 sendResponse({ success: true, data });
             }
         } catch (e) {
-            await logToExtension(`Ошибка: ${e.message}`, 'error');
+            await logToExtension({
+                category: 'system',
+                level: 'error',
+                event: 'content_action_failed',
+                title: 'Ошибка действия на странице',
+                message: e.message,
+                url: window.location.origin
+            });
             sendResponse({ success: false, error: e.message });
         }
     })();
@@ -1235,7 +1304,14 @@ async function runAnalysisCycle() {
     try {
         if (!(await isProtectionEnabled())) {
             if (!analysisState.protectionDisabledLogged) {
-                await logToExtension(`Защита отключена, анализ пропущен для ${window.location.origin}`, 'info');
+                await logToExtension({
+                    category: 'settings',
+                    level: 'warn',
+                    event: 'analysis_skipped_protection_disabled',
+                    title: 'Анализ пропущен',
+                    message: 'Защита отключена, поэтому проверка страницы не выполнялась.',
+                    url: window.location.origin
+                });
                 analysisState.protectionDisabledLogged = true;
             }
             return;
@@ -1250,10 +1326,19 @@ async function runAnalysisCycle() {
             return;
         }
 
-        await logToExtension(
-            `Анализ ${window.location.origin}: угроза=${analysis.risk}, счет=${analysis.score}, триггеры=${reasons.join(',') || 'scheduled'}`,
-            'info'
-        );
+        await logToExtension({
+            category: 'analysis',
+            level: 'info',
+            event: 'local_analysis_completed',
+            title: 'Локальный анализ завершён',
+            message: 'Страница проверена по локальным эвристикам.',
+            url: window.location.origin,
+            context: {
+                risk: analysis.risk,
+                score: analysis.score,
+                triggers: reasons.join(',') || 'scheduled'
+            }
+        });
 
         const { settings = {} } = await chrome.storage.sync.get('settings');
         const mode = settings.mode || 'hybrid';
@@ -1268,10 +1353,18 @@ async function runAnalysisCycle() {
             });
 
             if (analysis.risk === 'high' && autoEncrypt) {
-                await sendRuntimeMessageQuietly({
-                    action: 'log_event',
-                    message: 'Локальный режим анализа, запускаю авто-шифрование',
-                    type: 'auto_encrypt'
+                await logToExtension({
+                    category: 'encryption',
+                    level: 'info',
+                    event: 'auto_encrypt_started',
+                    title: 'Запущено авто-шифрование',
+                    message: 'Локальный анализ обнаружил высокий риск, запускаем автоматическое шифрование.',
+                    url: window.location.origin,
+                    context: {
+                        risk: analysis.risk,
+                        score: analysis.score,
+                        mode: 'local'
+                    }
                 });
                 const result = await safeEncryptAll();
                 if (result.count > 0) {
@@ -1280,10 +1373,19 @@ async function runAnalysisCycle() {
                         action: 'show_notification',
                         message: `Зашифровано ${result.count} записей`
                     });
-                    await logToExtension(
-                        `Auto-шифрование (локальный анализ): ${result.count} записей`,
-                        'auto_encrypt'
-                    );
+                    await logToExtension({
+                        category: 'encryption',
+                        level: 'success',
+                        event: 'auto_encrypt_completed',
+                        title: 'Авто-шифрование выполнено',
+                        message: `После локального анализа зашифровано ${result.count} записей.`,
+                        url: window.location.origin,
+                        context: {
+                            count: result.count,
+                            skipped: result.skipped,
+                            mode: 'local'
+                        }
+                    });
                 }
             }
         } else {
@@ -1295,19 +1397,37 @@ async function runAnalysisCycle() {
                     ...analysis
                 });
             } else {
-                await logToExtension(
-                    `Полный режим анализа: отправляю запрос на полный анализ (локальный risk=${analysis.risk})`,
-                    'info'
-                );
+                await logToExtension({
+                    category: 'ai',
+                    level: 'info',
+                    event: 'full_analysis_requested',
+                    title: 'Запрошен полный анализ',
+                    message: 'Локальная оценка требует дополнительной проверки в LM Studio.',
+                    url: window.location.origin,
+                    context: {
+                        risk: analysis.risk,
+                        score: analysis.score,
+                        policy: fullAnalysisPolicy
+                    }
+                });
                 const full = await requestFullAnalysis(analysis);
                 analysisState.lastFullRunAt = now;
 
-                await logToExtension(
-                    `Ответ полного анализа: угроза - ${full.aiDanger}`,
-                    'info'
-                );
+                await logToExtension({
+                    category: 'ai',
+                    level: 'info',
+                    event: 'full_analysis_received',
+                    title: 'Получен результат полного анализа',
+                    message: 'LM Studio вернул итоговую оценку страницы.',
+                    url: window.location.origin,
+                    context: {
+                        aiDanger: full.aiDanger,
+                        risk: full.risk,
+                        score: full.score
+                    }
+                });
 
-                if (autoEncrypt && full.aiDanger === 'высокий') {
+                if (autoEncrypt && (full.aiDanger === 'high' || full.aiDanger === 'высокий')) {
                     const result = await safeEncryptAll();
                     if (result.count > 0) {
                         await recordOperation('auto_encrypt_ai');
@@ -1315,10 +1435,19 @@ async function runAnalysisCycle() {
                             action: 'show_notification',
                             message: `Сайт признан опасным. Зашифровано ${result.count} записей (Полный анализ)`
                         });
-                        await logToExtension(
-                            `Полный анализ: зашифровано ${result.count} записей`,
-                            'auto_encrypt_ai'
-                        );
+                        await logToExtension({
+                            category: 'encryption',
+                            level: 'success',
+                            event: 'ai_auto_encrypt_completed',
+                            title: 'AI-автошифрование выполнено',
+                            message: `После полного анализа зашифровано ${result.count} записей.`,
+                            url: window.location.origin,
+                            context: {
+                                count: result.count,
+                                skipped: result.skipped,
+                                trigger: 'ai'
+                            }
+                        });
                     }
                 }
             }
@@ -1328,7 +1457,14 @@ async function runAnalysisCycle() {
         analysisState.lastReportedRisk = analysis.risk;
         analysisState.lastReportedScore = analysis.score;
     } catch (e) {
-        await logToExtension(`Ошибка анализа: ${e.message}`, 'error');
+        await logToExtension({
+            category: 'analysis',
+            level: 'error',
+            event: 'analysis_failed',
+            title: 'Ошибка анализа страницы',
+            message: e.message,
+            url: window.location.origin
+        });
     } finally {
         resetRuntimeSignalWindow();
         analysisState.inFlight = false;

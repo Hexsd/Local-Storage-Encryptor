@@ -7,6 +7,14 @@ const SETTINGS_STORAGE_KEY = 'settings';
 const MONITORED_SITES_STORAGE_KEY = 'monitoredSites';
 const SITE_DETAILS_PREFIX = 'siteDetails:';
 const MAX_LOGS = 500;
+const LOG_SCHEMA_VERSION = 2;
+const LOG_TITLE_MAX_LENGTH = 96;
+const LOG_MESSAGE_MAX_LENGTH = 320;
+const LOG_CONTEXT_MAX_KEYS = 8;
+const LOG_CONTEXT_VALUE_MAX_LENGTH = 120;
+const LOG_LEVELS = new Set(['info', 'success', 'warn', 'error']);
+const LOG_CATEGORIES = new Set(['analysis', 'encryption', 'ai', 'settings', 'data', 'system']);
+const LOG_SOURCES = new Set(['background', 'site', 'popup', 'options', 'extension']);
 const MAX_SYNC_ISSUES = 5;
 const MAX_SYNC_ISSUE_LENGTH = 160;
 const MAX_SYNC_REASON_LENGTH = 400;
@@ -18,7 +26,13 @@ const MAX_DEBUG_ENTRIES = 200;
 const DEBUG_MODE = true;
 
 chrome.runtime.onInstalled.addListener(() => {
-  void logEvent('Extension installed', 'system');
+  void logEvent({
+    category: 'system',
+    level: 'success',
+    event: 'extension_installed',
+    title: 'Расширение установлено',
+    message: 'Local Storage Encryptor установлен и готов к работе.'
+  });
   void debugTrace('lifecycle.installed');
 });
 
@@ -40,11 +54,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       break;
     case 'page_analyzed':
       void handlePageAnalysis(request).catch((error) =>
-        logEvent(`Page analysis failed: ${error.message}`, 'error', getSenderUrl(sender))
+        logEvent(
+          {
+            category: 'analysis',
+            level: 'error',
+            event: 'page_analysis_failed',
+            title: 'Не удалось сохранить анализ страницы',
+            message: error.message,
+            context: {
+              sender: getSenderSource(sender)
+            }
+          },
+          null,
+          getSenderUrl(sender),
+          getSenderSource(sender)
+        )
       );
       break;
     case 'log_event':
-      void logEvent(request?.message, request?.type, getSenderUrl(sender));
+      void logEvent(request, request?.type, getSenderUrl(sender), getSenderSource(sender));
       break;
     case 'record_operation':
       void recordOperation(request?.operation, getSenderUrl(sender));
@@ -79,7 +107,18 @@ async function handleAsyncMessage(request, sender, sendResponse) {
       senderUrl: getSenderUrl(sender),
       error: error?.message || String(error)
     });
-    await logEvent(`Full analysis failed: ${error.message}`, 'error', getSenderUrl(sender));
+    await logEvent(
+      {
+        category: 'analysis',
+        level: 'error',
+        event: 'full_analysis_failed',
+        title: 'Ошибка полного анализа',
+        message: error.message
+      },
+      null,
+      getSenderUrl(sender),
+      getSenderSource(sender)
+    );
     safeSendResponse(sendResponse, { success: false, error: error.message });
   }
 }
@@ -92,13 +131,16 @@ function safeSendResponse(sendResponse, payload) {
       error: payload?.error || ''
     });
   } catch {
-    // The sender may have already gone away. Logging is not useful here.
     void debugTrace('runtime.message.response.failed');
   }
 }
 
 function getSenderUrl(sender) {
   return sender?.url || sender?.tab?.url || 'background';
+}
+
+function getSenderSource(sender) {
+  return inferLogSourceFromUrl(getSenderUrl(sender));
 }
 
 async function getStoredSettings() {
@@ -171,7 +213,6 @@ async function debugTrace(event, payload = null) {
   try {
     console.log('[LSE debug]', entry.event, entry.payload || '');
   } catch {
-    // Ignore console failures.
   }
 
   try {
@@ -183,7 +224,6 @@ async function debugTrace(event, payload = null) {
     try {
       console.warn('[LSE debug] failed to persist trace', error);
     } catch {
-      // Ignore console failures.
     }
   }
 }
@@ -215,7 +255,7 @@ function sanitizeDebugPayload(value, depth = 0) {
   return String(value);
 }
 
-async function logEvent(message, type = 'info', url = 'background') {
+async function logEvent(input, type = 'info', url = 'background', source = '') {
   try {
     const { logging } = await getExtensionSettings();
     if (!logging) return;
@@ -223,12 +263,7 @@ async function logEvent(message, type = 'info', url = 'background') {
     const { [LOGS_STORAGE_KEY]: logs = [] } = await chrome.storage.local.get(LOGS_STORAGE_KEY);
     const nextLogs = Array.isArray(logs) ? logs.slice(-MAX_LOGS + 1) : [];
 
-    nextLogs.push({
-      timestamp: Date.now(),
-      message: String(message || ''),
-      type: normalizeLogType(type),
-      url: String(url || 'background')
-    });
+    nextLogs.push(buildLogEntry(input, type, url, source));
 
     await chrome.storage.local.set({ [LOGS_STORAGE_KEY]: nextLogs });
   } catch (error) {
@@ -239,6 +274,262 @@ async function logEvent(message, type = 'info', url = 'background') {
 function normalizeLogType(type) {
   const normalized = String(type || 'info').trim().toLowerCase();
   return normalized || 'info';
+}
+
+function buildLogEntry(input, legacyType = 'info', fallbackUrl = 'background', sourceHint = '') {
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    const rawType = normalizeLogType(input.type || legacyType);
+    const level = normalizeLogLevel(input.level || rawType);
+    const url = normalizeLogUrl(input.url || fallbackUrl);
+    const category = normalizeLogCategory(input.category || inferLogCategory(rawType, input.message));
+    const event = normalizeLogEvent(input.event || rawType);
+    const title = truncateText(
+      input.title || inferLogTitle(category, level, event, input.message),
+      LOG_TITLE_MAX_LENGTH
+    );
+    const message = truncateText(
+      input.message || inferLogMessage(category, event, title),
+      LOG_MESSAGE_MAX_LENGTH
+    );
+
+    return {
+      id: createLogId(),
+      version: LOG_SCHEMA_VERSION,
+      timestamp: normalizeLogTimestamp(input.timestamp),
+      level,
+      category,
+      event,
+      title: title || 'Событие',
+      message,
+      url,
+      source: normalizeLogSource(input.source || sourceHint, url),
+      context: sanitizeLogContext(input.context)
+    };
+  }
+
+  const message = truncateText(String(input || ''), LOG_MESSAGE_MAX_LENGTH);
+  const rawType = normalizeLogType(legacyType);
+  const category = normalizeLogCategory(inferLogCategory(rawType, message));
+  const level = normalizeLogLevel(rawType);
+  const event = normalizeLogEvent(rawType);
+  const title = truncateText(inferLogTitle(category, level, event, message), LOG_TITLE_MAX_LENGTH);
+  const url = normalizeLogUrl(fallbackUrl);
+
+  return {
+    id: createLogId(),
+    version: LOG_SCHEMA_VERSION,
+    timestamp: Date.now(),
+    level,
+    category,
+    event,
+    title: title || 'Событие',
+    message,
+    url,
+    source: normalizeLogSource(sourceHint, url),
+    context: null
+  };
+}
+
+function createLogId() {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeLogLevel(value) {
+  const normalized = String(value || 'info').trim().toLowerCase();
+  if (LOG_LEVELS.has(normalized)) return normalized;
+  if (normalized === 'warning') return 'warn';
+  if (normalized === 'system') return 'info';
+  if (
+    normalized === 'auto_encrypt' ||
+    normalized === 'auto_encrypt_ai' ||
+    normalized === 'manual_encrypt' ||
+    normalized === 'manual_decrypt'
+  ) {
+    return 'success';
+  }
+  return normalized === 'warn' ? 'warn' : 'info';
+}
+
+function normalizeLogCategory(value) {
+  const normalized = String(value || 'system').trim().toLowerCase();
+  return LOG_CATEGORIES.has(normalized) ? normalized : 'system';
+}
+
+function normalizeLogEvent(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function normalizeLogTimestamp(value) {
+  const timestamp = Number(value);
+  return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : Date.now();
+}
+
+function normalizeLogUrl(value) {
+  const url = String(value || '').trim();
+  return url || 'background';
+}
+
+function normalizeLogSource(value, url = 'background') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (LOG_SOURCES.has(normalized)) return normalized;
+  return inferLogSourceFromUrl(url);
+}
+
+function inferLogSourceFromUrl(url) {
+  const sourceUrl = String(url || '').trim();
+  if (!sourceUrl || sourceUrl === 'background') return 'background';
+  if (!sourceUrl.startsWith('chrome-extension://')) return 'site';
+  if (sourceUrl.endsWith('/popup.html')) return 'popup';
+  if (sourceUrl.endsWith('/options.html')) return 'options';
+  return 'extension';
+}
+
+function inferLogCategory(type, message = '') {
+  const normalizedType = normalizeLogType(type);
+  const text = String(message || '').toLowerCase();
+
+  if (
+    normalizedType === 'auto_encrypt' ||
+    normalizedType === 'auto_encrypt_ai' ||
+    normalizedType === 'manual_encrypt' ||
+    normalizedType === 'manual_decrypt' ||
+    text.includes('шифр') ||
+    text.includes('дешиф')
+  ) {
+    return 'encryption';
+  }
+
+  if (
+    normalizedType === 'request' ||
+    normalizedType === 'lm_response' ||
+    normalizedType === 'lm_verdict' ||
+    text.includes('lm studio') ||
+    text.includes('ai')
+  ) {
+    return 'ai';
+  }
+
+  if (normalizedType === 'export' || text.includes('экспорт')) {
+    return 'data';
+  }
+
+  if (text.includes('настро') || text.includes('защит')) {
+    return 'settings';
+  }
+
+  if (text.includes('анализ') || text.includes('risk=') || text.includes('score=')) {
+    return 'analysis';
+  }
+
+  return 'system';
+}
+
+function inferLogTitle(category, level, event, message = '') {
+  const eventMap = {
+    extension_installed: 'Расширение установлено',
+    page_analysis_failed: 'Ошибка сохранения анализа',
+    full_analysis_failed: 'Ошибка полного анализа',
+    heuristic_analysis_saved: 'Эвристический анализ сохранён',
+    hybrid_analysis_requested: 'Запущен гибридный анализ',
+    lm_request_started: 'Запрос к LM Studio отправлен',
+    lm_request_failed: 'Ошибка LM Studio',
+    lm_response_received: 'Получен ответ LM Studio',
+    lm_verdict_received: 'Получен AI-вердикт',
+    auto_encrypt_confirmed: 'Подтверждено авто-шифрование'
+  };
+
+  if (eventMap[event]) return eventMap[event];
+
+  const categoryTitles = {
+    analysis: {
+      error: 'Ошибка анализа',
+      warn: 'Предупреждение анализа',
+      success: 'Анализ завершён',
+      info: 'Событие анализа'
+    },
+    encryption: {
+      error: 'Ошибка шифрования',
+      warn: 'Шифрование требует внимания',
+      success: 'Шифрование выполнено',
+      info: 'Событие шифрования'
+    },
+    ai: {
+      error: 'Ошибка AI-анализа',
+      warn: 'AI-анализ требует внимания',
+      success: 'AI-ответ получен',
+      info: 'AI-событие'
+    },
+    settings: {
+      error: 'Ошибка настроек',
+      warn: 'Изменение настроек',
+      success: 'Настройки обновлены',
+      info: 'Событие настроек'
+    },
+    data: {
+      error: 'Ошибка данных',
+      warn: 'Операция с данными',
+      success: 'Данные обработаны',
+      info: 'Событие данных'
+    },
+    system: {
+      error: 'Системная ошибка',
+      warn: 'Системное предупреждение',
+      success: 'Системное событие',
+      info: 'Системное событие'
+    }
+  };
+
+  const byCategory = categoryTitles[category] || categoryTitles.system;
+  const title = byCategory[level] || byCategory.info;
+
+  return title || truncateText(String(message || 'Событие'), LOG_TITLE_MAX_LENGTH);
+}
+
+function inferLogMessage(category, event, title) {
+  if (title) return String(title);
+
+  if (event) {
+    return `${category}: ${event}`;
+  }
+
+  return 'Событие без описания';
+}
+
+function sanitizeLogContext(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+
+  const entries = Object.entries(value).slice(0, LOG_CONTEXT_MAX_KEYS);
+  const sanitized = {};
+
+  for (const [key, nestedValue] of entries) {
+    const safeKey = String(key || '').trim();
+    if (!safeKey) continue;
+
+    if (typeof nestedValue === 'number' && Number.isFinite(nestedValue)) {
+      sanitized[safeKey] = nestedValue;
+      continue;
+    }
+
+    if (typeof nestedValue === 'boolean') {
+      sanitized[safeKey] = nestedValue;
+      continue;
+    }
+
+    if (typeof nestedValue === 'string') {
+      sanitized[safeKey] = truncateText(nestedValue, LOG_CONTEXT_VALUE_MAX_LENGTH);
+      continue;
+    }
+
+    if (nestedValue !== null && nestedValue !== undefined) {
+      sanitized[safeKey] = truncateText(String(nestedValue), LOG_CONTEXT_VALUE_MAX_LENGTH);
+    }
+  }
+
+  return Object.keys(sanitized).length > 0 ? sanitized : null;
 }
 
 function normalizeRisk(value) {
@@ -371,7 +662,16 @@ async function saveMonitoredSiteSummary(summary) {
       updatedAt: site.updatedAt
     }));
 
-    await logEvent(`Sync storage is full, saving compact monitored site list: ${error.message}`, 'warn');
+    await logEvent({
+      category: 'system',
+      level: 'warn',
+      event: 'sync_storage_compacted',
+      title: 'Sync-хранилище переполнено',
+      message: 'Список отслеживаемых сайтов сохранён в сокращённом виде.',
+      context: {
+        reason: error.message
+      }
+    });
     return saveMonitoredSites(compactSites);
   }
 }
@@ -444,11 +744,39 @@ async function persistAnalysisResult(data, extra = {}) {
   });
 
   if (syncResult.status === 'rejected') {
-    await logEvent(`Failed to save monitored site summary for ${summary.url}: ${syncResult.reason?.message || syncResult.reason}`, 'error');
+    await logEvent(
+      {
+        category: 'system',
+        level: 'error',
+        event: 'monitored_site_summary_save_failed',
+        title: 'Не удалось сохранить карточку сайта',
+        message: 'Сводная информация по сайту не была записана в sync-хранилище.',
+        context: {
+          reason: syncResult.reason?.message || String(syncResult.reason || ''),
+          site: summary.url
+        }
+      },
+      null,
+      summary.url
+    );
   }
 
   if (localResult.status === 'rejected') {
-    await logEvent(`Failed to save detailed local analysis for ${summary.url}: ${localResult.reason?.message || localResult.reason}`, 'error');
+    await logEvent(
+      {
+        category: 'system',
+        level: 'error',
+        event: 'local_analysis_details_save_failed',
+        title: 'Не удалось сохранить детали анализа',
+        message: 'Подробные данные локального анализа не были записаны.',
+        context: {
+          reason: localResult.reason?.message || String(localResult.reason || ''),
+          site: summary.url
+        }
+      },
+      null,
+      summary.url
+    );
   }
 
   const syncedSites = syncResult.status === 'fulfilled' ? syncResult.value : null;
@@ -464,10 +792,38 @@ async function handlePageAnalysis(data) {
     risk: summary.risk,
     score: summary.score
   });
-  await logEvent(`Stored heuristic analysis for ${summary.url}: risk=${summary.risk}, score=${summary.score ?? 'n/a'}`, 'info', summary.url);
+  await logEvent(
+    {
+      category: 'analysis',
+      level: 'success',
+      event: 'heuristic_analysis_saved',
+      title: 'Эвристический анализ сохранён',
+      message: `Сайт ${summary.url} обновлён в журнале мониторинга.`,
+      context: {
+        risk: summary.risk,
+        score: summary.score ?? 'n/a'
+      }
+    },
+    null,
+    summary.url
+  );
 
   if (data?.encryptedByAI && Number(data?.encryptedCount) > 0) {
-    await logEvent(`Auto encryption confirmed for ${summary.url}: ${data.encryptedCount} records`, 'auto_encrypt_ai', summary.url);
+    await logEvent(
+      {
+        category: 'encryption',
+        level: 'success',
+        event: 'auto_encrypt_confirmed',
+        title: 'Подтверждено авто-шифрование',
+        message: `После AI-анализа зашифровано ${data.encryptedCount} записей.`,
+        context: {
+          count: Number(data.encryptedCount) || 0,
+          trigger: 'ai'
+        }
+      },
+      null,
+      summary.url
+    );
   }
 }
 
@@ -486,7 +842,22 @@ async function handleFullPageAnalysis(data) {
     endpoint: settings.lmStudioEndpoint,
     model: settings.lmStudioModel
   });
-  await logEvent(`Full analysis requested for ${url}: mode=${settings.mode}, risk=${normalizeRisk(data?.risk)}, score=${normalizeScore(data?.score) ?? 'n/a'}`, 'info', url);
+  await logEvent(
+    {
+      category: 'ai',
+      level: 'info',
+      event: 'hybrid_analysis_requested',
+      title: 'Запущен гибридный анализ',
+      message: 'Локальный результат передан в LM Studio для дополнительной оценки.',
+      context: {
+        mode: settings.mode,
+        risk: normalizeRisk(data?.risk),
+        score: normalizeScore(data?.score) ?? 'n/a'
+      }
+    },
+    null,
+    url
+  );
 
   if (settings.mode === 'local') {
     await debugTrace('analysis.full.local_mode', { url });
@@ -504,13 +875,36 @@ async function handleFullPageAnalysis(data) {
       url,
       aiDanger: aiAssessment?.danger || ''
     });
-    await logEvent(`LM Studio response parsed for ${url}: aiDanger=${aiAssessment.danger}`, 'lm_verdict', url);
+    await logEvent(
+      {
+        category: 'ai',
+        level: 'success',
+        event: 'lm_verdict_received',
+        title: 'Получен AI-вердикт',
+        message: 'LM Studio вернул итоговую оценку поведения страницы.',
+        context: {
+          danger: aiAssessment.danger
+        }
+      },
+      null,
+      url
+    );
   } catch (error) {
     await debugTrace('analysis.full.lm.error', {
       url,
       error: error?.message || String(error)
     });
-    await logEvent(`LM Studio request failed for ${url}: ${error.message}`, 'error', url);
+    await logEvent(
+      {
+        category: 'ai',
+        level: 'error',
+        event: 'lm_request_failed',
+        title: 'Ошибка запроса к LM Studio',
+        message: error.message
+      },
+      null,
+      url
+    );
   }
 
   const aiDanger = aiAssessment?.danger || 'low';
@@ -694,7 +1088,21 @@ async function askLmStudioAboutSite(data, settings) {
     ]
   };
 
-  await logEvent(`LM Studio request started: endpoint=${endpoint}, model=${model}`, 'request', String(data?.url || 'background'));
+  await logEvent(
+    {
+      category: 'ai',
+      level: 'info',
+      event: 'lm_request_started',
+      title: 'Запрос к LM Studio отправлен',
+      message: 'Расширение отправило сводку сигналов страницы на AI-анализ.',
+      context: {
+        endpoint,
+        model
+      }
+    },
+    null,
+    String(data?.url || 'background')
+  );
   await debugTrace('lm.request.start', {
     url: data?.url,
     endpoint,
@@ -771,7 +1179,17 @@ async function askLmStudioAboutSite(data, settings) {
     danger: parseDangerLevel(text),
     textPreview: text.slice(0, 400)
   });
-  await logEvent(`LM Studio raw response: ${truncateText(text, 400)}`, 'lm_response', String(data?.url || 'background'));
+  await logEvent(
+    {
+      category: 'ai',
+      level: 'info',
+      event: 'lm_response_received',
+      title: 'Получен ответ LM Studio',
+      message: truncateText(text, 400)
+    },
+    null,
+    String(data?.url || 'background')
+  );
 
   return {
     danger: parseDangerLevel(text),

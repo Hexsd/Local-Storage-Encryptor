@@ -43,9 +43,26 @@
         <div class="card-head card-head--row">
           <div>
             <h2>Журнал событий</h2>
-            <p class="card-desc">Последние действия расширения</p>
+            <p class="card-desc">Понятный журнал действий: шифрование, анализ, AI, настройки и системные события.</p>
           </div>
           <button id="clear-logs-btn" type="button">Очистить</button>
+        </div>
+        <div class="log-toolbar">
+          <div class="log-filter-group" id="log-category-filters" aria-label="Фильтр по категории"></div>
+          <label class="log-filter-select" for="log-level-filter">
+            <span>Уровень</span>
+            <select id="log-level-filter">
+              <option value="all">Все уровни</option>
+              <option value="info">Информация</option>
+              <option value="success">Успех</option>
+              <option value="warn">Предупреждения</option>
+              <option value="error">Ошибки</option>
+            </select>
+          </label>
+        </div>
+        <div class="logs-summary-row">
+          <strong id="logs-counter">0</strong>
+          <p id="logs-summary">Журнал пуст.</p>
         </div>
         <div class="logs-list" id="logs-list" role="log" aria-live="polite">
           <p class="empty-state">Логи пока пусты</p>
@@ -137,12 +154,6 @@
             <button type="button" id="test-lm-btn">Проверить доступ к API</button>
             <p id="lm-test-status" class="feedback" aria-live="polite"></p>
           </div>
-<!--
-          <div class="settings-row">
-            <label for="lm-model">LM Studio model</label>
-            <input id="lm-model" type="text" placeholder="qwen3-4b-2507">
-          </div>
-           -->
 
           <label class="toggle-row" for="notifications">
             <input id="notifications" type="checkbox" checked>

@@ -52,6 +52,14 @@ function bindEvents() {
   });
   dom.optionsBtn.addEventListener('click', () => {
     recordOperation('popup_options');
+    void sendLog({
+      category: 'settings',
+      level: 'info',
+      event: 'options_opened',
+      title: 'Открыта страница настроек',
+      message: 'Пользователь перешёл из popup в настройки расширения.',
+      source: 'popup'
+    });
     chrome.runtime.openOptionsPage();
   });
   dom.saveKeyBtn.addEventListener('click', saveEncryptionKey);
@@ -73,8 +81,24 @@ async function runTabAction({ button, loadingText, action, onSuccess, fallbackEr
       return;
     }
 
+    await sendLog({
+      category: 'encryption',
+      level: 'error',
+      event: `${action}_failed_popup`,
+      title: 'Действие не выполнено',
+      message: response?.error || fallbackError,
+      source: 'popup'
+    });
     showStatus(response?.error || fallbackError, 'error');
   } catch (error) {
+    await sendLog({
+      category: 'encryption',
+      level: 'error',
+      event: `${action}_runtime_failed`,
+      title: 'Ошибка запуска действия',
+      message: error.message,
+      source: 'popup'
+    });
     showStatus(`Ошибка: ${error.message}`, 'error');
   } finally {
     setButtonLoading(button, false);
@@ -95,8 +119,24 @@ async function saveEncryptionKey() {
     dom.encryptionKeyInput.value = '';
     dom.encryptionKeyInput.placeholder = 'Ключ сохранён';
     setKeyStatus(true);
+    await sendLog({
+      category: 'settings',
+      level: 'success',
+      event: 'encryption_key_saved',
+      title: 'Ключ шифрования сохранён',
+      message: 'Новый ключ сохранён локально и готов к использованию.',
+      source: 'popup'
+    });
     showStatus('Ключ шифрования сохранён', 'success');
   } catch (error) {
+    await sendLog({
+      category: 'settings',
+      level: 'error',
+      event: 'encryption_key_save_failed',
+      title: 'Не удалось сохранить ключ шифрования',
+      message: error.message,
+      source: 'popup'
+    });
     showStatus(`Ошибка сохранения ключа: ${error.message}`, 'error');
   } finally {
     setButtonLoading(dom.saveKeyBtn, false);
@@ -144,6 +184,14 @@ async function exportData() {
 
     showStatus('Файл сохранён', 'success');
   } catch (error) {
+    await sendLog({
+      category: 'data',
+      level: 'error',
+      event: 'export_failed',
+      title: 'Не удалось экспортировать localStorage',
+      message: error.message,
+      source: 'popup'
+    });
     showStatus(`Ошибка: ${error.message}`, 'error');
   } finally {
     if (blobUrl) {
@@ -211,6 +259,15 @@ function recordOperation(operation) {
       operation
     });
   } catch {
-    // Ignore telemetry failures in popup interactions.
+  }
+}
+
+async function sendLog(entry) {
+  try {
+    await chrome.runtime.sendMessage({
+      action: 'log_event',
+      ...entry
+    });
+  } catch {
   }
 }

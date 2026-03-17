@@ -14,7 +14,6 @@
         try {
             window.postMessage({ source: SOURCE, type, payload, ts: Date.now() }, '*');
         } catch {
-            // ignore
         }
     }
 
