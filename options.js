@@ -1133,11 +1133,25 @@ function getLmModelValue() {
   return dom.lmModel?.value?.trim() || DEFAULT_LM_MODEL;
 }
 
+function normalizeRuntimeMessageError(error) {
+  const message = String(error?.message || error || '').trim();
+
+  if (message.includes('The message port closed before a response was received')) {
+    return 'Service worker расширения закрыл соединение до ответа. Перезагрузите расширение и повторите проверку.';
+  }
+
+  if (message.includes('Receiving end does not exist')) {
+    return 'Фоновый обработчик расширения недоступен. Перезагрузите расширение и повторите попытку.';
+  }
+
+  return message || 'Неизвестная ошибка обмена сообщениями расширения.';
+}
+
 function sendRuntimeMessage(message) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(message, (response) => {
       if (chrome.runtime.lastError) {
-        reject(new Error(chrome.runtime.lastError.message));
+        reject(new Error(normalizeRuntimeMessageError(chrome.runtime.lastError)));
         return;
       }
 

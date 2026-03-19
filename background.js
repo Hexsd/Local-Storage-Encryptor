@@ -51,6 +51,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   switch (action) {
     case 'show_notification':
       void showNotification(request?.message);
+      safeSendResponse(sendResponse, { success: true });
       break;
     case 'page_analyzed':
       void handlePageAnalysis(request).catch((error) =>
@@ -70,12 +71,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           getSenderSource(sender)
         )
       );
+      safeSendResponse(sendResponse, { success: true });
       break;
     case 'log_event':
       void logEvent(request, request?.type, getSenderUrl(sender), getSenderSource(sender));
+      safeSendResponse(sendResponse, { success: true });
       break;
     case 'record_operation':
       void recordOperation(request?.operation, getSenderUrl(sender));
+      safeSendResponse(sendResponse, { success: true });
       break;
     default:
       break;
@@ -85,41 +89,46 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 async function handleAsyncMessage(request, sender, sendResponse) {
+  void debugTrace('runtime.message.async.start', {
+    action: request?.action,
+    senderUrl: getSenderUrl(sender)
+  });
+
   try {
-    await debugTrace('runtime.message.async.start', {
-      action: request?.action,
-      senderUrl: getSenderUrl(sender)
-    });
     const data =
       request?.action === 'test_lm_studio'
         ? await handleLmStudioTest(request, sender)
         : await handleFullPageAnalysis(request, sender);
-    await debugTrace('runtime.message.async.success', {
+
+    safeSendResponse(sendResponse, { success: true, data });
+
+    void debugTrace('runtime.message.async.success', {
       action: request?.action,
       senderUrl: getSenderUrl(sender),
       url: data?.url,
       aiDanger: data?.aiDanger
     });
-    safeSendResponse(sendResponse, { success: true, data });
   } catch (error) {
-    await debugTrace('runtime.message.async.error', {
+    const errorMessage = error?.message || String(error);
+    safeSendResponse(sendResponse, { success: false, error: errorMessage });
+
+    void debugTrace('runtime.message.async.error', {
       action: request?.action,
       senderUrl: getSenderUrl(sender),
-      error: error?.message || String(error)
+      error: errorMessage
     });
-    await logEvent(
+    void logEvent(
       {
         category: 'analysis',
         level: 'error',
         event: 'full_analysis_failed',
         title: 'Ошибка полного анализа',
-        message: error.message
+        message: errorMessage
       },
       null,
       getSenderUrl(sender),
       getSenderSource(sender)
     );
-    safeSendResponse(sendResponse, { success: false, error: error.message });
   }
 }
 
