@@ -5,6 +5,7 @@ const LOGS_STORAGE_KEY = 'logs';
 const STATS_STORAGE_KEY = 'stats';
 const SETTINGS_STORAGE_KEY = 'settings';
 const MONITORED_SITES_STORAGE_KEY = 'monitoredSites';
+const WHITELISTED_SITES_STORAGE_KEY = 'whitelistedSites';
 const SITE_DETAILS_PREFIX = 'siteDetails:';
 const MAX_LOGS = 500;
 const LOG_SCHEMA_VERSION = 2;
@@ -591,10 +592,30 @@ function getSiteDetailsStorageKey(url) {
   return `${SITE_DETAILS_PREFIX}${encodeURIComponent(url)}`;
 }
 
+function normalizeSiteUrl(value) {
+  if (!value) return '';
+
+  try {
+    const parsed = new URL(String(value).trim());
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return '';
+    }
+    return parsed.origin.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function isSameSiteUrl(left, right) {
+  const leftKey = normalizeSiteUrl(left);
+  const rightKey = normalizeSiteUrl(right);
+  return Boolean(leftKey) && leftKey === rightKey;
+}
+
 function getBaseSiteRecord(record) {
   if (!record || typeof record !== 'object') return null;
 
-  const url = String(record.url || '').trim();
+  const url = normalizeSiteUrl(record.url);
   if (!url) return null;
 
   return {
@@ -607,6 +628,17 @@ function getBaseSiteRecord(record) {
     aiRecommendation: truncateText(record.aiRecommendation, MAX_SYNC_RECOMMENDATION_LENGTH),
     added: Number.isFinite(Number(record.added)) ? Number(record.added) : Date.now(),
     updatedAt: Number.isFinite(Number(record.updatedAt)) ? Number(record.updatedAt) : Date.now()
+  };
+}
+
+function getBaseWhitelistRecord(record) {
+  const source = record && typeof record === 'object' ? record : { url: record };
+  const url = normalizeSiteUrl(source?.url);
+  if (!url) return null;
+
+  return {
+    url,
+    added: Number.isFinite(Number(source.added)) ? Number(source.added) : Date.now()
   };
 }
 
@@ -630,6 +662,22 @@ async function getMonitoredSites() {
   return monitoredSites
     .map((site) => getBaseSiteRecord(site))
     .filter(Boolean);
+}
+
+async function getWhitelistedSites() {
+  const { [WHITELISTED_SITES_STORAGE_KEY]: whitelistedSites = [] } =
+    await chrome.storage.sync.get(WHITELISTED_SITES_STORAGE_KEY);
+
+  if (!Array.isArray(whitelistedSites)) return [];
+
+  return whitelistedSites
+    .map((site) => getBaseWhitelistRecord(site))
+    .filter((site, index, collection) => collection.findIndex((item) => isSameSiteUrl(item.url, site.url)) === index);
+}
+
+async function isSiteWhitelisted(url) {
+  const whitelistedSites = await getWhitelistedSites();
+  return whitelistedSites.some((site) => isSameSiteUrl(site.url, url));
 }
 
 async function saveMonitoredSites(sites) {
@@ -795,6 +843,13 @@ async function persistAnalysisResult(data, extra = {}) {
 }
 
 async function handlePageAnalysis(data) {
+  if (await isSiteWhitelisted(data?.url)) {
+    await debugTrace('analysis.heuristic.skipped_whitelist', {
+      url: String(data?.url || '')
+    });
+    return;
+  }
+
   const summary = await persistAnalysisResult(data, { source: 'heuristic' });
   await debugTrace('analysis.heuristic.stored', {
     url: summary.url,
@@ -842,6 +897,15 @@ async function handleFullPageAnalysis(data) {
 
   if (!url) {
     throw new Error('Missing analyzed page URL');
+  }
+
+  if (await isSiteWhitelisted(url)) {
+    await debugTrace('analysis.full.skipped_whitelist', { url });
+    return buildFullResponse(data, {
+      aiDanger: 'low',
+      aiReason: 'Site is whitelisted',
+      aiRecommendation: ''
+    });
   }
 
   await persistAnalysisResult(data, { source: 'heuristic' });

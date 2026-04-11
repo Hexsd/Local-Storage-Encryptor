@@ -41,7 +41,7 @@ const PAGE_BASE_DOMAIN = getBaseDomain(PAGE_HOSTNAME);
 
 const runtimeSignals = createRuntimeSignals();
 const analysisState = createAnalysisState();
-setupRuntimeMonitoring();
+let runtimeMonitoringStarted = false;
 
 function createRuntimeSignals() {
     return {
@@ -122,6 +122,26 @@ function createAnalysisState() {
         lastFullRunAt: 0,
         protectionDisabledLogged: false
     };
+}
+
+function normalizeSiteUrl(value) {
+    if (!value) return '';
+
+    try {
+        const parsed = new URL(String(value).trim());
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            return '';
+        }
+        return parsed.origin.toLowerCase();
+    } catch {
+        return '';
+    }
+}
+
+function isSameSiteUrl(left, right) {
+    const leftKey = normalizeSiteUrl(left);
+    const rightKey = normalizeSiteUrl(right);
+    return Boolean(leftKey) && leftKey === rightKey;
 }
 
 function setupRuntimeMonitoring() {
@@ -587,6 +607,33 @@ async function waitForObservationWindow(minMs) {
 async function isProtectionEnabled() {
     const { settings = {} } = await chrome.storage.sync.get('settings');
     return settings.protectionEnabled !== false;
+}
+
+async function isSiteWhitelisted(url = window.location.origin) {
+    const { whitelistedSites = [] } = await chrome.storage.sync.get('whitelistedSites');
+    if (!Array.isArray(whitelistedSites)) return false;
+
+    return whitelistedSites.some((site) => {
+        const siteUrl =
+            site && typeof site === 'object' && !Array.isArray(site)
+                ? site.url
+                : site;
+        return isSameSiteUrl(siteUrl, url);
+    });
+}
+
+function startRuntimeMonitoring() {
+    if (runtimeMonitoringStarted) return;
+    runtimeMonitoringStarted = true;
+    resetRuntimeSignalWindow();
+    setupRuntimeMonitoring();
+    registerDynamicAnalysisTriggers();
+}
+
+async function bootstrapRuntimeMonitoring() {
+    if (!isRuntimeMessageAvailable()) return;
+    if (await isSiteWhitelisted()) return;
+    startRuntimeMonitoring();
 }
 
 function isRuntimeMessageAvailable() {
@@ -1302,6 +1349,10 @@ async function runAnalysisCycle() {
     analysisState.lastRunAt = Date.now();
 
     try {
+        if (await isSiteWhitelisted()) {
+            return;
+        }
+
         if (!(await isProtectionEnabled())) {
             if (!analysisState.protectionDisabledLogged) {
                 await logToExtension({
@@ -1508,5 +1559,12 @@ function registerDynamicAnalysisTriggers() {
 }
 
 if (chrome.runtime?.sendMessage) {
-    registerDynamicAnalysisTriggers();
+    void bootstrapRuntimeMonitoring();
+}
+
+if (chrome.storage?.onChanged) {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+        if (areaName !== 'sync' || !changes.whitelistedSites) return;
+        void bootstrapRuntimeMonitoring();
+    });
 }

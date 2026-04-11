@@ -29,7 +29,8 @@ const LOG_LEVEL_META = {
 };
 
 const dom = {};
-let feedbackTimer = null;
+let siteFeedbackTimer = null;
+let whitelistFeedbackTimer = null;
 let saveButtonTimer = null;
 const activeLogFilters = {
   category: 'all',
@@ -52,6 +53,10 @@ function cacheDom() {
   dom.siteFeedback = document.getElementById('site-feedback');
   dom.addSiteBtn = document.getElementById('add-site-btn');
   dom.sitesList = document.getElementById('sites-list');
+  dom.whitelistInput = document.getElementById('whitelist-input');
+  dom.whitelistFeedback = document.getElementById('whitelist-feedback');
+  dom.addWhitelistBtn = document.getElementById('add-whitelist-btn');
+  dom.whitelistList = document.getElementById('whitelist-list');
 
   dom.threatsToday = document.getElementById('threats-today');
   dom.threatsMonth = document.getElementById('threats-month');
@@ -99,8 +104,12 @@ function bindEvents() {
   dom.addSiteBtn?.addEventListener('click', addSite);
   dom.siteInput?.addEventListener('keydown', onSiteInputKeyDown);
   dom.siteInput?.addEventListener('input', onSiteInputChanged);
+  dom.addWhitelistBtn?.addEventListener('click', addWhitelistSite);
+  dom.whitelistInput?.addEventListener('keydown', onWhitelistInputKeyDown);
+  dom.whitelistInput?.addEventListener('input', onWhitelistInputChanged);
 
   dom.sitesList?.addEventListener('click', onSitesListClick);
+  dom.whitelistList?.addEventListener('click', onWhitelistListClick);
 
   dom.settingsForm?.addEventListener('submit', saveSettings);
   dom.testLmBtn?.addEventListener('click', testLmStudioConnection);
@@ -160,8 +169,8 @@ function onStorageChanged(changes, areaName) {
 
 async function refreshByStorageChange(changes, areaName) {
   try {
-    if (areaName === 'sync' && changes.monitoredSites) {
-      await Promise.all([loadSites(), loadStats()]);
+    if (areaName === 'sync' && (changes.monitoredSites || changes.whitelistedSites)) {
+      await Promise.all([loadSiteCollections(), loadStats()]);
       return;
     }
 
@@ -184,7 +193,7 @@ async function refreshByStorageChange(changes, areaName) {
 
 async function initialLoad() {
   try {
-    await Promise.all([loadSites(), loadStats(), loadSettings(), loadLogs()]);
+    await Promise.all([loadSiteCollections(), loadStats(), loadSettings(), loadLogs()]);
   } catch (error) {
     console.error('Ошибка начальной загрузки данных options:', error);
     showSiteFeedback('Не удалось загрузить данные страницы.', 'error');
@@ -204,19 +213,60 @@ function onSiteInputChanged() {
   }
 }
 
-function onSitesListClick(event) {
-  const removeBtn = event.target.closest('.remove-site-btn');
-  if (!removeBtn) return;
-
-  const siteRow = removeBtn.closest('.site-row');
-  if (!siteRow?.dataset.site) return;
-
-  removeSite(siteRow.dataset.site);
+function onWhitelistInputKeyDown(event) {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  addWhitelistSite();
 }
 
-async function loadSites() {
-  const { monitoredSites = [] } = await chrome.storage.sync.get('monitoredSites');
-  const safeSites = monitoredSites.filter((site) => site && typeof site.url === 'string' && site.url.trim());
+function onWhitelistInputChanged() {
+  dom.whitelistInput.classList.remove('is-invalid');
+  if (dom.whitelistFeedback.classList.contains('is-error')) {
+    clearWhitelistFeedback();
+  }
+}
+
+function onSitesListClick(event) {
+  const actionButton = event.target.closest('[data-site-action]');
+  if (!actionButton) return;
+
+  const siteRow = actionButton.closest('.site-row');
+  if (!siteRow?.dataset.site) return;
+
+  if (actionButton.dataset.siteAction === 'whitelist') {
+    void moveSiteToWhitelist(siteRow.dataset.site);
+    return;
+  }
+
+  if (actionButton.dataset.siteAction === 'remove') {
+    void removeSite(siteRow.dataset.site);
+  }
+}
+
+function onWhitelistListClick(event) {
+  const actionButton = event.target.closest('[data-whitelist-action]');
+  if (!actionButton) return;
+
+  const siteRow = actionButton.closest('.site-row');
+  if (!siteRow?.dataset.site) return;
+
+  if (actionButton.dataset.whitelistAction === 'monitor') {
+    void moveWhitelistToMonitoring(siteRow.dataset.site);
+    return;
+  }
+
+  if (actionButton.dataset.whitelistAction === 'remove') {
+    void removeWhitelistedSite(siteRow.dataset.site);
+  }
+}
+
+async function loadSiteCollections() {
+  const { monitoredSites, whitelistedSites } = await getSiteCollections();
+  renderMonitoredSites(monitoredSites);
+  renderWhitelistedSites(whitelistedSites);
+}
+
+function renderMonitoredSites(safeSites) {
   dom.sitesList.replaceChildren();
 
   if (safeSites.length === 0) {
@@ -226,6 +276,19 @@ async function loadSites() {
 
   safeSites.forEach((site) => {
     dom.sitesList.appendChild(createSiteRow(site));
+  });
+}
+
+function renderWhitelistedSites(safeSites) {
+  dom.whitelistList.replaceChildren();
+
+  if (safeSites.length === 0) {
+    appendEmptyState(dom.whitelistList, 'Белый список пуст');
+    return;
+  }
+
+  safeSites.forEach((site) => {
+    dom.whitelistList.appendChild(createWhitelistRow(site));
   });
 }
 
@@ -269,24 +332,81 @@ function createSiteRow(site) {
   badge.className = `badge ${riskBadge.className}`;
   badge.textContent = `Риск: ${riskBadge.text}`;
 
+  const whitelistBtn = document.createElement('button');
+  whitelistBtn.type = 'button';
+  whitelistBtn.className = 'site-action-btn';
+  whitelistBtn.dataset.siteAction = 'whitelist';
+  whitelistBtn.textContent = 'В белый список';
+
   const removeBtn = document.createElement('button');
   removeBtn.type = 'button';
   removeBtn.className = 'danger remove-site-btn';
+  removeBtn.dataset.siteAction = 'remove';
   removeBtn.textContent = 'Удалить';
 
   info.append(siteUrl, meta);
-  actions.append(badge, removeBtn);
+  actions.append(badge, whitelistBtn, removeBtn);
+  row.append(info, actions);
+
+  return row;
+}
+
+function createWhitelistRow(site) {
+  const row = document.createElement('div');
+  row.className = 'site-row site-row-whitelist';
+  row.dataset.site = site.url;
+
+  const info = document.createElement('div');
+  info.className = 'site-info';
+
+  const siteUrl = document.createElement('span');
+  siteUrl.className = 'site-url';
+  siteUrl.textContent = site.url;
+
+  const meta = document.createElement('div');
+  meta.className = 'site-meta';
+
+  const statusMeta = document.createElement('span');
+  statusMeta.className = 'site-meta-item';
+  statusMeta.textContent = 'Анализ отключён';
+  meta.appendChild(statusMeta);
+
+  const addedMeta = document.createElement('span');
+  addedMeta.className = 'site-meta-item';
+  addedMeta.textContent = `Добавлен: ${formatSiteDate(site.added)}`;
+  meta.appendChild(addedMeta);
+
+  const actions = document.createElement('span');
+  actions.className = 'site-actions';
+
+  const badge = document.createElement('span');
+  badge.className = 'badge badge-neutral';
+  badge.textContent = 'Без анализа';
+
+  const monitorBtn = document.createElement('button');
+  monitorBtn.type = 'button';
+  monitorBtn.className = 'site-action-btn';
+  monitorBtn.dataset.whitelistAction = 'monitor';
+  monitorBtn.textContent = 'В мониторинг';
+
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.className = 'danger';
+  removeBtn.dataset.whitelistAction = 'remove';
+  removeBtn.textContent = 'Удалить';
+
+  info.append(siteUrl, meta);
+  actions.append(badge, monitorBtn, removeBtn);
   row.append(info, actions);
 
   return row;
 }
 
 async function loadStats() {
-  const [{ stats = {} }, { monitoredSites = [] }] = await Promise.all([
+  const [{ stats = {} }, { monitoredSites: safeSites }] = await Promise.all([
     chrome.storage.local.get('stats'),
-    chrome.storage.sync.get('monitoredSites')
+    getSiteCollections()
   ]);
-  const safeSites = monitoredSites.filter((site) => site && typeof site.url === 'string' && site.url.trim());
   const threatsToday = getOperationCountForDisplay(stats, 'day');
   const threatsMonth = getOperationCountForDisplay(stats, 'month');
   const sitesCount = safeSites.length;
@@ -508,7 +628,7 @@ function createLogEntry(log) {
 
 async function addSite() {
   const rawUrl = dom.siteInput.value.trim();
-  const normalizedUrl = normalizeHttpUrl(rawUrl);
+  const normalizedUrl = normalizeSiteUrl(rawUrl);
 
   if (!normalizedUrl) {
     dom.siteInput.classList.add('is-invalid');
@@ -516,18 +636,22 @@ async function addSite() {
     return;
   }
 
-  const { monitoredSites = [] } = await chrome.storage.sync.get('monitoredSites');
-  const safeSites = monitoredSites.filter((site) => site && typeof site.url === 'string' && site.url.trim());
-  const exists = safeSites.some((site) => site.url === normalizedUrl);
+  const { monitoredSites, whitelistedSites } = await getSiteCollections();
+  const exists = hasSiteUrl(monitoredSites, normalizedUrl);
 
   if (exists) {
     showSiteFeedback('Этот сайт уже есть в списке.', 'error');
     return;
   }
 
-  safeSites.push({ url: normalizedUrl, risk: 'low', added: Date.now() });
-  await chrome.storage.sync.set({ monitoredSites: safeSites });
-  await syncStatsBySites(safeSites);
+  if (hasSiteUrl(whitelistedSites, normalizedUrl)) {
+    showSiteFeedback('Этот сайт уже находится в белом списке.', 'error');
+    return;
+  }
+
+  const nextMonitoredSites = [...monitoredSites, { url: normalizedUrl, risk: 'low', added: Date.now() }];
+  await chrome.storage.sync.set({ monitoredSites: nextMonitoredSites });
+  await syncStatsBySites(nextMonitoredSites);
   await sendLog({
     category: 'settings',
     level: 'success',
@@ -542,17 +666,16 @@ async function addSite() {
   dom.siteInput.classList.remove('is-invalid');
   showSiteFeedback('Сайт добавлен в мониторинг.', 'success');
 
-  await Promise.all([loadSites(), loadStats()]);
+  await Promise.all([loadSiteCollections(), loadStats()]);
 }
 
 async function removeSite(url) {
-  const { monitoredSites = [] } = await chrome.storage.sync.get('monitoredSites');
-  const safeSites = monitoredSites.filter((site) => site && typeof site.url === 'string' && site.url.trim());
-  const filtered = safeSites.filter((site) => site.url !== url);
+  const { monitoredSites, whitelistedSites } = await getSiteCollections();
+  const filtered = monitoredSites.filter((site) => !isSameSiteUrl(site.url, url));
 
-  if (filtered.length === safeSites.length) return;
+  if (filtered.length === monitoredSites.length) return;
 
-  await chrome.storage.sync.set({ monitoredSites: filtered });
+  await chrome.storage.sync.set({ monitoredSites: filtered, whitelistedSites });
   await syncStatsBySites(filtered);
   await sendLog({
     category: 'settings',
@@ -565,7 +688,127 @@ async function removeSite(url) {
   });
   showSiteFeedback('Сайт удалён из списка.', 'success');
 
-  await Promise.all([loadSites(), loadStats()]);
+  await Promise.all([loadSiteCollections(), loadStats()]);
+}
+
+async function addWhitelistSite() {
+  const rawUrl = dom.whitelistInput.value.trim();
+  const normalizedUrl = normalizeSiteUrl(rawUrl);
+
+  if (!normalizedUrl) {
+    dom.whitelistInput.classList.add('is-invalid');
+    showWhitelistFeedback('Введите корректный URL вида https://example.com', 'error');
+    return;
+  }
+
+  const { monitoredSites, whitelistedSites } = await getSiteCollections();
+
+  if (hasSiteUrl(whitelistedSites, normalizedUrl)) {
+    showWhitelistFeedback('Этот сайт уже есть в белом списке.', 'error');
+    return;
+  }
+
+  if (hasSiteUrl(monitoredSites, normalizedUrl)) {
+    showWhitelistFeedback('Этот сайт уже отслеживается. Перенесите его кнопкой из списка мониторинга.', 'error');
+    return;
+  }
+
+  const nextWhitelistedSites = [...whitelistedSites, { url: normalizedUrl, added: Date.now() }];
+  await chrome.storage.sync.set({ monitoredSites, whitelistedSites: nextWhitelistedSites });
+  await sendLog({
+    category: 'settings',
+    level: 'success',
+    event: 'site_whitelisted',
+    title: 'Сайт добавлен в белый список',
+    message: 'Этот сайт исключён из анализа и мониторинга.',
+    source: 'options',
+    url: normalizedUrl
+  });
+
+  dom.whitelistInput.value = '';
+  dom.whitelistInput.classList.remove('is-invalid');
+  showWhitelistFeedback('Сайт добавлен в белый список.', 'success');
+
+  await Promise.all([loadSiteCollections(), loadStats()]);
+}
+
+async function removeWhitelistedSite(url) {
+  const { monitoredSites, whitelistedSites } = await getSiteCollections();
+  const filtered = whitelistedSites.filter((site) => !isSameSiteUrl(site.url, url));
+
+  if (filtered.length === whitelistedSites.length) return;
+
+  await chrome.storage.sync.set({ monitoredSites, whitelistedSites: filtered });
+  await sendLog({
+    category: 'settings',
+    level: 'info',
+    event: 'site_removed_from_whitelist',
+    title: 'Сайт удалён из белого списка',
+    message: 'Сайт снова можно добавить в мониторинг при необходимости.',
+    source: 'options',
+    url
+  });
+  showWhitelistFeedback('Сайт удалён из белого списка.', 'success');
+
+  await Promise.all([loadSiteCollections(), loadStats()]);
+}
+
+async function moveSiteToWhitelist(url) {
+  const { monitoredSites, whitelistedSites } = await getSiteCollections();
+  const siteToMove = monitoredSites.find((site) => isSameSiteUrl(site.url, url));
+  if (!siteToMove) return;
+
+  const nextMonitoredSites = monitoredSites.filter((site) => !isSameSiteUrl(site.url, url));
+  const nextWhitelistedSites = hasSiteUrl(whitelistedSites, siteToMove.url)
+    ? whitelistedSites
+    : [...whitelistedSites, { url: siteToMove.url, added: Date.now() }];
+
+  await chrome.storage.sync.set({
+    monitoredSites: nextMonitoredSites,
+    whitelistedSites: nextWhitelistedSites
+  });
+  await syncStatsBySites(nextMonitoredSites);
+  await sendLog({
+    category: 'settings',
+    level: 'info',
+    event: 'site_moved_to_whitelist',
+    title: 'Сайт перенесён в белый список',
+    message: 'Сайт исключён из автоматического анализа.',
+    source: 'options',
+    url: siteToMove.url
+  });
+  showSiteFeedback('Сайт перенесён в белый список.', 'success');
+
+  await Promise.all([loadSiteCollections(), loadStats()]);
+}
+
+async function moveWhitelistToMonitoring(url) {
+  const { monitoredSites, whitelistedSites } = await getSiteCollections();
+  const siteToMove = whitelistedSites.find((site) => isSameSiteUrl(site.url, url));
+  if (!siteToMove) return;
+
+  const nextWhitelistedSites = whitelistedSites.filter((site) => !isSameSiteUrl(site.url, url));
+  const nextMonitoredSites = hasSiteUrl(monitoredSites, siteToMove.url)
+    ? monitoredSites
+    : [...monitoredSites, { url: siteToMove.url, risk: 'low', added: Date.now() }];
+
+  await chrome.storage.sync.set({
+    monitoredSites: nextMonitoredSites,
+    whitelistedSites: nextWhitelistedSites
+  });
+  await syncStatsBySites(nextMonitoredSites);
+  await sendLog({
+    category: 'settings',
+    level: 'success',
+    event: 'site_moved_to_monitoring',
+    title: 'Сайт возвращён в мониторинг',
+    message: 'Сайт снова будет участвовать в автоматическом анализе.',
+    source: 'options',
+    url: siteToMove.url
+  });
+  showWhitelistFeedback('Сайт возвращён в мониторинг.', 'success');
+
+  await Promise.all([loadSiteCollections(), loadStats()]);
 }
 
 async function saveSettings(event) {
@@ -1021,21 +1264,97 @@ function formatTimestamp(timestamp) {
   return new Date(value).toLocaleString('ru-RU');
 }
 
-function normalizeHttpUrl(value) {
+function formatSiteDate(timestamp) {
+  const value = Number(timestamp);
+  if (!Number.isFinite(value)) return 'только что';
+
+  return new Date(value).toLocaleDateString('ru-RU');
+}
+
+function normalizeSiteUrl(value) {
   if (!value) return null;
 
   try {
-    const parsed = new URL(value);
+    const parsed = new URL(String(value).trim());
 
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return null;
     }
 
-    const trimmedPath = parsed.pathname === '/' ? '' : parsed.pathname.replace(/\/$/, '');
-    return `${parsed.origin}${trimmedPath}${parsed.search}`;
+    return parsed.origin.toLowerCase();
   } catch {
     return null;
   }
+}
+
+function getSiteMatchKey(value) {
+  return normalizeSiteUrl(value) || String(value || '').trim().toLowerCase();
+}
+
+function isSameSiteUrl(left, right) {
+  return getSiteMatchKey(left) !== '' && getSiteMatchKey(left) === getSiteMatchKey(right);
+}
+
+function hasSiteUrl(sites, url) {
+  return Array.isArray(sites) && sites.some((site) => isSameSiteUrl(site?.url, url));
+}
+
+function normalizeStoredSiteItem(item, listType) {
+  const source = item && typeof item === 'object' && !Array.isArray(item) ? item : { url: item };
+  const url = normalizeSiteUrl(source.url);
+  if (!url) return null;
+
+  const added = Number.isFinite(Number(source.added)) ? Number(source.added) : Date.now();
+
+  if (listType === 'whitelist') {
+    return { url, added };
+  }
+
+  const normalized = {
+    ...source,
+    url,
+    added
+  };
+
+  if (!normalized.risk || typeof normalized.risk !== 'string') {
+    normalized.risk = 'low';
+  }
+
+  if (normalized.aiDanger) {
+    normalized.aiDanger = normalizeAiDanger(normalized.aiDanger);
+  }
+
+  return normalized;
+}
+
+function sanitizeSiteList(items, listType) {
+  if (!Array.isArray(items)) return [];
+
+  return items.reduce((result, item) => {
+    const normalized = normalizeStoredSiteItem(item, listType);
+    if (!normalized || hasSiteUrl(result, normalized.url)) {
+      return result;
+    }
+
+    result.push(normalized);
+    return result;
+  }, []);
+}
+
+async function getSiteCollections() {
+  const { monitoredSites = [], whitelistedSites = [] } = await chrome.storage.sync.get([
+    'monitoredSites',
+    'whitelistedSites'
+  ]);
+  const safeWhitelistedSites = sanitizeSiteList(whitelistedSites, 'whitelist');
+  const whitelistKeys = new Set(safeWhitelistedSites.map((site) => getSiteMatchKey(site.url)));
+  const safeMonitoredSites = sanitizeSiteList(monitoredSites, 'monitored')
+    .filter((site) => !whitelistKeys.has(getSiteMatchKey(site.url)));
+
+  return {
+    monitoredSites: safeMonitoredSites,
+    whitelistedSites: safeWhitelistedSites
+  };
 }
 
 function appendEmptyState(container, text) {
@@ -1085,22 +1404,54 @@ function getSiteScore(site) {
 }
 
 function showSiteFeedback(text, type = 'info') {
-  if (feedbackTimer) {
-    window.clearTimeout(feedbackTimer);
-    feedbackTimer = null;
-  }
-
-  dom.siteFeedback.textContent = text;
-  dom.siteFeedback.className = `feedback is-visible ${feedbackClassByType(type)}`;
-
-  feedbackTimer = window.setTimeout(() => {
-    clearSiteFeedback();
-  }, FEEDBACK_TIMEOUT_MS);
+  siteFeedbackTimer = showFeedbackMessage({
+    node: dom.siteFeedback,
+    timer: siteFeedbackTimer,
+    text,
+    type,
+    onClear: () => {
+      siteFeedbackTimer = null;
+      clearSiteFeedback();
+    }
+  });
 }
 
 function clearSiteFeedback() {
   dom.siteFeedback.textContent = '';
   dom.siteFeedback.className = 'feedback';
+}
+
+function showWhitelistFeedback(text, type = 'info') {
+  whitelistFeedbackTimer = showFeedbackMessage({
+    node: dom.whitelistFeedback,
+    timer: whitelistFeedbackTimer,
+    text,
+    type,
+    onClear: () => {
+      whitelistFeedbackTimer = null;
+      clearWhitelistFeedback();
+    }
+  });
+}
+
+function clearWhitelistFeedback() {
+  dom.whitelistFeedback.textContent = '';
+  dom.whitelistFeedback.className = 'feedback';
+}
+
+function showFeedbackMessage({ node, timer, text, type = 'info', onClear }) {
+  if (!node) return null;
+
+  if (timer) {
+    window.clearTimeout(timer);
+  }
+
+  node.textContent = text;
+  node.className = `feedback is-visible ${feedbackClassByType(type)}`;
+
+  return window.setTimeout(() => {
+    onClear?.();
+  }, FEEDBACK_TIMEOUT_MS);
 }
 
 function showLmTestStatus(text, type = 'info') {

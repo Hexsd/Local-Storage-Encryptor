@@ -275,6 +275,10 @@ button.danger:hover {
   overflow-y: auto;
 }
 
+.sites-list-compact {
+  max-height: 280px;
+}
+
 .site-row {
   display: flex;
   align-items: flex-start;
@@ -328,7 +332,20 @@ button.danger:hover {
 .site-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 6px;
+}
+
+.site-action-btn {
+  border-color: #d7cef7;
+  background: #f7f4ff;
+  color: var(--accent);
+}
+
+.site-action-btn:hover {
+  border-color: var(--accent);
+  background: #efeafd;
 }
 
 .badge {
@@ -352,6 +369,11 @@ button.danger:hover {
 .badge-risk {
   background: #fdeeee;
   color: var(--risk);
+}
+
+.badge-neutral {
+  background: #edf3ff;
+  color: #496cae;
 }
 
 .risk-guide {
@@ -835,6 +857,7 @@ button.danger:hover {
 
 .column-main > .card:nth-child(1) { animation-delay: 0.05s; }
 .column-main > .card:nth-child(2) { animation-delay: 0.1s; }
+.column-main > .card:nth-child(3) { animation-delay: 0.14s; }
 .column-side > .card:nth-child(1) { animation-delay: 0.08s; }
 .column-side > .card:nth-child(2) { animation-delay: 0.13s; }
 .column-side > .card:nth-child(3) { animation-delay: 0.18s; }

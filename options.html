@@ -39,6 +39,19 @@
         </div>
       </section>
 
+      <section class="card card-whitelist" data-animate>
+        <div class="card-head">
+          <h2>Белый список</h2>
+          <p class="card-desc">Сайты из этого списка не анализируются и не попадают в мониторинг, пока вы не вернёте их обратно.</p>
+        </div>
+        <div class="input-group">
+          <input id="whitelist-input" type="url" placeholder="https://example.com" aria-label="URL сайта для белого списка">
+          <button id="add-whitelist-btn" type="button">Добавить</button>
+        </div>
+        <p id="whitelist-feedback" class="feedback" aria-live="polite"></p>
+        <div class="sites-list sites-list-compact" id="whitelist-list" role="list"></div>
+      </section>
+
       <section class="card card-logs" data-animate>
         <div class="card-head card-head--row">
           <div>
