@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Настройки - Local Storage Encryptor</title>
+  <title>Настройки - LSE</title>
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
@@ -159,7 +159,7 @@
             </select>
           </div>
           <div class="settings-row">
-            <label for="lm-endpoint">API вашей нейросети</label>
+            <label for="lm-endpoint">API</label>
             <input id="lm-endpoint" type="url" placeholder="http://127.0.0.1:1234/v1/chat/completions">
           </div>
 
@@ -184,6 +184,15 @@
     </div>
   </main>
 
-  <script src="options.js"></script>
+  <script src="src/options/state.js"></script>
+  <script src="src/options/app.js"></script>
+  <script src="src/options/sites.js"></script>
+  <script src="src/options/stats.js"></script>
+  <script src="src/options/settings.js"></script>
+  <script src="src/options/logs.js"></script>
+  <script src="src/options/actions.js"></script>
+  <script src="src/options/log-format.js"></script>
+  <script src="src/options/site-utils.js"></script>
+  <script src="src/options/ui-utils.js"></script>
 </body>
 </html>

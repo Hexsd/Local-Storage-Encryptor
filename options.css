@@ -108,6 +108,13 @@ h1 {
   padding: 14px;
   border: 1px solid var(--border);
   background: var(--surface);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.card:hover,
+.card:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 18px 40px -34px rgba(119, 89, 255, 0.75);
 }
 
 .card-threats {
@@ -150,6 +157,7 @@ h1 {
 }
 
 #site-input,
+#whitelist-input,
 .settings-row select,
 .log-filter-select select {
   width: 100%;
@@ -162,6 +170,7 @@ h1 {
 }
 
 #site-input:focus,
+#whitelist-input:focus,
 .settings-row select:focus,
 .log-filter-select select:focus {
   border-color: var(--accent);
@@ -169,7 +178,8 @@ h1 {
   outline-offset: 0;
 }
 
-#site-input.is-invalid {
+#site-input.is-invalid,
+#whitelist-input.is-invalid {
   border-color: var(--risk);
 }
 
@@ -221,6 +231,7 @@ button:disabled {
 }
 
 #add-site-btn,
+#add-whitelist-btn,
 #save-settings-btn,
 #protection-toggle {
   border-color: var(--accent);
@@ -229,6 +240,7 @@ button:disabled {
 }
 
 #add-site-btn:hover,
+#add-whitelist-btn:hover,
 #save-settings-btn:hover,
 #protection-toggle:hover {
   border-color: var(--accent-strong);
