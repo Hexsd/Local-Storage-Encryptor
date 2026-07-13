@@ -7,6 +7,7 @@ async function analyze() {
     const storageOps = runtimeSignals.storage;
     const networkOps = runtimeSignals.network;
     const activityOps = runtimeSignals.activity;
+    const protectionOps = runtimeSignals.protection;
 
     const observationMs = Date.now() - runtimeSignals.startedAt;
     const observationSec = Math.max(1, observationMs / 1000);
@@ -117,13 +118,21 @@ async function analyze() {
     const networkScore = clamp(Object.values(networkParts).reduce((sum, n) => sum + n, 0), 0, 35);
     const activityScore = clamp(Object.values(activityParts).reduce((sum, n) => sum + n, 0), 0, 20);
 
-    const totalScore = clamp(storageScore + networkScore + activityScore, 0, 100);
+    const protectionScore = Math.min(40, protectionOps.blockedRequests * 25 + protectionOps.blockedForms * 30);
+    const totalScore = clamp(storageScore + networkScore + activityScore + protectionScore, 0, 100);
 
     let risk = 'low';
     if (totalScore >= 70) risk = 'high';
     else if (totalScore >= 35) risk = 'medium';
 
     const issues = [];
+
+    if (protectionOps.blockedRequests > 0) {
+        issues.push(`Предотвращена передача секрета из Web Storage: ${protectionOps.blockedRequests}.`);
+    }
+    if (protectionOps.blockedForms > 0) {
+        issues.push(`Остановлена опасная отправка формы с учётными данными: ${protectionOps.blockedForms}.`);
+    }
 
     if (storageScore >= 22) {
         issues.push(
@@ -224,7 +233,8 @@ async function analyze() {
             components: {
                 storage: { score: storageScore, parts: storageParts },
                 network: { score: networkScore, parts: networkParts },
-                activity: { score: activityScore, parts: activityParts }
+                activity: { score: activityScore, parts: activityParts },
+                protection: { score: protectionScore }
             },
             metrics: {
                 storage: {
@@ -292,6 +302,11 @@ async function analyze() {
                     hiddenNetworkRequests: activityOps.hiddenNetworkRequests,
                     hiddenMutationBursts: activityOps.hiddenMutationBursts,
                     mutationRatePerSec: Number(mutationRatePerSec.toFixed(2))
+                },
+                protection: {
+                    blockedRequests: protectionOps.blockedRequests,
+                    blockedForms: protectionOps.blockedForms,
+                    lastBlockedDestination: protectionOps.lastBlockedDestination
                 },
                 storageSnapshot: {
                     local: localSnapshot,

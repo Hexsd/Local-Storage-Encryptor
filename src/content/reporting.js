@@ -96,6 +96,7 @@ function resetRuntimeSignalWindow() {
     runtimeSignals.storage = next.storage;
     runtimeSignals.network = next.network;
     runtimeSignals.activity = next.activity;
+    runtimeSignals.protection = next.protection;
 }
 
 async function runAnalysisCycle() {
@@ -155,7 +156,6 @@ async function runAnalysisCycle() {
 
         const { settings = {} } = await chrome.storage.sync.get('settings');
         const mode = settings.mode || 'hybrid';
-        const autoEncrypt = settings.autoEncrypt !== false;
         const fullAnalysisPolicy = settings.fullAnalysisPolicy || 'always';
 
         if (mode === 'local') {
@@ -165,42 +165,6 @@ async function runAnalysisCycle() {
                 ...analysis
             });
 
-            if (analysis.risk === 'high' && autoEncrypt) {
-                await logToExtension({
-                    category: 'encryption',
-                    level: 'info',
-                    event: 'auto_encrypt_started',
-                    title: 'Запущено авто-шифрование',
-                    message: 'Локальный анализ обнаружил высокий риск, запускаем автоматическое шифрование.',
-                    url: getCurrentPageUrl(),
-                    context: {
-                        risk: analysis.risk,
-                        score: analysis.score,
-                        mode: 'local'
-                    }
-                });
-                const result = await safeEncryptAll();
-                if (result.count > 0) {
-                    await recordOperation('auto_encrypt');
-                    await sendRuntimeMessageQuietly({
-                        action: 'show_notification',
-                        message: `Зашифровано ${result.count} записей`
-                    });
-                    await logToExtension({
-                        category: 'encryption',
-                        level: 'success',
-                        event: 'auto_encrypt_completed',
-                        title: 'Авто-шифрование выполнено',
-                        message: `После локального анализа зашифровано ${result.count} записей.`,
-                        url: getCurrentPageUrl(),
-                        context: {
-                            count: result.count,
-                            skipped: result.skipped,
-                            mode: 'local'
-                        }
-                    });
-                }
-            }
         } else {
             const runFull = shouldRunFullAnalysis(mode, analysis, reasons, now, fullAnalysisPolicy);
             if (!runFull) {
@@ -240,29 +204,6 @@ async function runAnalysisCycle() {
                     }
                 });
 
-                if (autoEncrypt && (full.aiDanger === 'high' || full.aiDanger === 'высокий')) {
-                    const result = await safeEncryptAll();
-                    if (result.count > 0) {
-                        await recordOperation('auto_encrypt_ai');
-                        await sendRuntimeMessageQuietly({
-                            action: 'show_notification',
-                            message: `Сайт признан опасным. Зашифровано ${result.count} записей (Полный анализ)`
-                        });
-                        await logToExtension({
-                            category: 'encryption',
-                            level: 'success',
-                            event: 'ai_auto_encrypt_completed',
-                            title: 'AI-автошифрование выполнено',
-                            message: `После полного анализа зашифровано ${result.count} записей.`,
-                            url: getCurrentPageUrl(),
-                            context: {
-                                count: result.count,
-                                skipped: result.skipped,
-                                trigger: 'ai'
-                            }
-                        });
-                    }
-                }
             }
         }
 

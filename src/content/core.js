@@ -1,9 +1,3 @@
-const ENCRYPTION_KEY_STORAGE = 'encryptionPassphrase';
-const slt = new TextEncoder().encode('}vsosh{');
-const ins = 100000;
-let cryptoKeyPromise = null;
-let cryptoKeyPassphrase = null;
-
 const SENSITIVE_KEY_PATTERN = /(token|auth|session|jwt|bearer|secret|pass|credential|sid|csrf|xsrf|refresh|access)/i;
 const LARGE_VALUE_THRESHOLD = 2048;
 const MIN_OBSERVATION_MS = 3000;
@@ -105,6 +99,11 @@ function createRuntimeSignals() {
             hiddenNetworkRequests: 0,
             hiddenMutationBursts: 0
         },
+        protection: {
+            blockedRequests: 0,
+            blockedForms: 0,
+            lastBlockedDestination: ''
+        },
         probeErrors: 0
     };
 }
@@ -180,22 +179,6 @@ function isSameSiteUrl(left, right) {
 function setupRuntimeMonitoring() {
     window.addEventListener('message', handleProbeMessage, false);
     startDomMutationObserver();
-    injectPageProbe();
-}
-
-function injectPageProbe() {
-    try {
-        const script = document.createElement('script');
-        script.src = chrome.runtime.getURL('src/content/page-probe.js');
-        script.async = false;
-        script.onload = () => script.remove();
-        script.onerror = () => {
-            runtimeSignals.probeErrors += 1;
-        };
-        (document.head || document.documentElement).appendChild(script);
-    } catch {
-        runtimeSignals.probeErrors += 1;
-    }
 }
 
 function startDomMutationObserver() {
@@ -227,7 +210,7 @@ function startDomMutationObserver() {
 }
 
 function handleProbeMessage(event) {
-    if (event.source !== window || !event.data || event.data.source !== 'lse_probe') return;
+    if (event.source !== window || !event.data || event.data.source !== 'local_sentinel_probe') return;
 
     const { type, payload = {}, ts } = event.data;
     const timestamp = Number(ts) || Date.now();
@@ -260,6 +243,16 @@ function handleProbeMessage(event) {
         case 'history':
             runtimeSignals.activity.historyWrites += 1;
             scheduleAnalysis('history', { force: true });
+            break;
+        case 'request_blocked':
+            runtimeSignals.protection.blockedRequests += 1;
+            runtimeSignals.protection.lastBlockedDestination = String(payload.destination || '');
+            scheduleAnalysis('signal:request:blocked', { force: true });
+            break;
+        case 'form_blocked':
+            runtimeSignals.protection.blockedForms += 1;
+            runtimeSignals.protection.lastBlockedDestination = String(payload.destination || '');
+            scheduleAnalysis('signal:form:blocked', { force: true });
             break;
         default:
             break;

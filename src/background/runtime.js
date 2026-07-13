@@ -1,10 +1,11 @@
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener((details) => {
+  void initializeExtension(details);
   void logEvent({
     category: 'system',
     level: 'success',
     event: 'extension_installed',
     title: 'Расширение установлено',
-    message: 'Local Storage Encryptor установлен и готов к работе.'
+    message: 'Local Sentinel установлен и готов блокировать утечки.'
   });
   void debugTrace('lifecycle.installed');
 });
@@ -54,6 +55,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       void recordOperation(request?.operation, getSenderUrl(sender));
       safeSendResponse(sendResponse, { success: true });
       break;
+    case 'security_event':
+      void recordSecurityEvent(request, sender);
+      safeSendResponse(sendResponse, { success: true });
+      break;
+    case 'get_security_summary':
+      void getSecuritySummary().then((data) => safeSendResponse(sendResponse, { success: true, data }));
+      return true;
     default:
       break;
   }
@@ -123,4 +131,28 @@ function getSenderUrl(sender) {
 
 function getSenderSource(sender) {
   return inferLogSourceFromUrl(getSenderUrl(sender));
+}
+
+async function initializeExtension(details) {
+  const { settings = {} } = await chrome.storage.sync.get(SETTINGS_STORAGE_KEY);
+  await chrome.storage.sync.set({
+    [SETTINGS_STORAGE_KEY]: {
+      protectionEnabled: settings.protectionEnabled !== false,
+      protectionMode: ['strict', 'balanced', 'monitor'].includes(settings.protectionMode) ? settings.protectionMode : 'balanced',
+      blockDangerousForms: settings.blockDangerousForms !== false,
+      protectExternalLinks: settings.protectExternalLinks !== false,
+      notifications: settings.notifications !== false,
+      logging: settings.logging !== false,
+      mode: settings.mode === 'hybrid' ? 'hybrid' : 'local',
+      fullAnalysisPolicy: settings.fullAnalysisPolicy === 'always' ? 'always' : 'smart',
+      trustedDestinations: Array.isArray(settings.trustedDestinations) ? settings.trustedDestinations.slice(0, 64) : [],
+      lmStudioEndpoint: settings.lmStudioEndpoint || DEFAULT_LM_STUDIO_ENDPOINT,
+      lmStudioModel: settings.lmStudioModel || DEFAULT_LM_STUDIO_MODEL
+    }
+  });
+
+  // Legacy versions stored a reusable encryption password in plaintext. It is no
+  // longer needed by the preventive protection model and must not remain at rest.
+  await chrome.storage.local.remove('encryptionPassphrase');
+  await debugTrace('lifecycle.initialized', { reason: details?.reason || 'unknown' });
 }

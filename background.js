@@ -9,5 +9,6 @@ importScripts(
   'src/background/prompt.js',
   'src/background/lm-studio.js',
   'src/background/stats.js',
+  'src/background/security.js',
   'src/background/errors.js'
 );

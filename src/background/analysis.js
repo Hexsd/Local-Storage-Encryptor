@@ -30,23 +30,6 @@ async function handlePageAnalysis(data) {
     summary.url
   );
 
-  if (data?.encryptedByAI && Number(data?.encryptedCount) > 0) {
-    await logEvent(
-      {
-        category: 'encryption',
-        level: 'success',
-        event: 'auto_encrypt_confirmed',
-        title: 'Подтверждено авто-шифрование',
-        message: `После AI-анализа зашифровано ${data.encryptedCount} записей.`,
-        context: {
-          count: Number(data.encryptedCount) || 0,
-          trigger: 'ai'
-        }
-      },
-      null,
-      summary.url
-    );
-  }
 }
 
 async function handleFullPageAnalysis(data) {

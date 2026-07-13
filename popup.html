@@ -1,35 +1,38 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Local Storage Encryptor</title>
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <header class="popup-header" data-animate>
-    <h2>Local Storage Encryptor</h2>
-    <p>Быстрые действия для текущей вкладки</p>
-  </header>
+  <main>
+    <header>
+      <div class="brand"><span class="mark" aria-hidden="true">S</span><div><strong>Local Storage Encryptor</strong><span id="site">Текущая вкладка</span></div></div>
+      <button id="power" class="icon-button" type="button" aria-label="Включить или выключить защиту" aria-pressed="true"><span></span></button>
+    </header>
 
-  <main class="actions" data-animate>
-    <button id="encryptBtn" class="primary" type="button">Зашифровать</button>
-    <button id="decryptBtn" type="button">Расшифровать</button>
-    <button id="exportBtn" type="button">Экспорт</button>
-    <button id="optionsBtn" type="button">Настройки</button>
-  </main>
+    <section class="hero" aria-live="polite">
+      <div id="shield" class="shield">✓</div>
+      <h1 id="status-title">Защита активна</h1>
+      <p id="status-text">Проверяем страницу локально</p>
+    </section>
 
-  <section class="key-panel" data-animate>
-    <label for="encryptionKeyInput">Ключ шифрования</label>
-    <div class="key-row">
-      <input id="encryptionKeyInput" type="password" placeholder="Введите ключ">
-      <button id="saveKeyBtn" type="button">Сохранить ключ</button>
+    <section class="metrics" aria-label="Статистика защиты">
+      <div><strong id="blocked">0</strong><span>заблокировано</span></div>
+      <div><strong id="findings">0</strong><span>сигналов сейчас</span></div>
+    </section>
+
+    <section id="finding-list" class="finding-list" hidden></section>
+
+    <div class="actions">
+      <button id="scan" class="primary" type="button">Проверить страницу</button>
+      <button id="trust" type="button">Доверять сайту</button>
     </div>
-    <p id="keyStatus" class="key-status"></p>
-  </section>
 
-  <div id="status" class="status" role="status" aria-live="polite"></div>
-
+    <footer><button id="options" type="button">Настройки и журнал <span>→</span></button></footer>
+  </main>
   <script src="popup.js"></script>
 </body>
 </html>

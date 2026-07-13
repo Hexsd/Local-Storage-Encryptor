@@ -223,6 +223,12 @@ function inferLogTitle(category, level, event, message = '') {
       warn: 'Системное предупреждение',
       success: 'Системное событие',
       info: 'Системное событие'
+    },
+    security: {
+      error: 'Ошибка защиты',
+      warn: 'Угроза заблокирована',
+      success: 'Защита сработала',
+      info: 'Событие защиты'
     }
   };
 

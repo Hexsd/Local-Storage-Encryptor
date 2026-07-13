@@ -13,7 +13,7 @@ async function getExtensionSettings() {
   return {
     notifications: settings.notifications !== false,
     logging: settings.logging !== false,
-    mode: settings.mode === 'local' ? 'local' : 'hybrid',
+    mode: settings.mode === 'hybrid' ? 'hybrid' : 'local',
     lmStudioEndpoint: normalizeEndpoint(settings.lmStudioEndpoint),
     lmStudioModel: normalizeModel(settings.lmStudioModel),
     lmStudioTimeoutMs: normalizeTimeout(settings.lmStudioTimeoutMs)
@@ -25,6 +25,10 @@ function normalizeEndpoint(value) {
 
   try {
     const parsed = new URL(endpoint);
+    const localHosts = new Set(['127.0.0.1', 'localhost', '[::1]']);
+    if (!['http:', 'https:'].includes(parsed.protocol) || !localHosts.has(parsed.hostname)) {
+      return DEFAULT_LM_STUDIO_ENDPOINT;
+    }
     return parsed.toString();
   } catch {
     return DEFAULT_LM_STUDIO_ENDPOINT;
@@ -51,7 +55,7 @@ async function showNotification(message) {
   chrome.notifications.create({
     type: 'basic',
     iconUrl: 'icons/128.png',
-    title: 'Local Storage Encryptor',
+    title: 'Local Sentinel',
     message: String(message || 'Potential risk detected')
   });
 }

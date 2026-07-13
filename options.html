@@ -1,198 +1,55 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Настройки - LSE</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Local Storage Encryptor — настройки</title>
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
-  <header class="page-header" data-animate>
-    <div>
-      <h1>Local Storage Encryptor</h1>
-      <p class="subtitle">Управление шифрованием localStorage и мониторингом угроз.</p>
-    </div>
-    <div class="header-actions">
-      <span id="protection-state" class="state-pill" aria-live="polite">Защита активна</span>
-      <button id="protection-toggle" class="protection-on" type="button">Отключить защиту</button>
-    </div>
-  </header>
+  <header class="topbar"><a class="brand" href="#top"><span>S</span>Local Storage Encryptor</a><div id="save-state">Все изменения сохраняются локально</div></header>
+  <main id="top">
+    <section class="intro"><p class="eyebrow">Панель защиты</p><h1>Контроль без лишнего шума.</h1><p>Расширение блокирует утечки токенов и опасные формы на устройстве. Содержимое полей и значения хранилищ не записываются в журнал.</p></section>
 
-  <main class="layout">
-    <div class="column column-main">
-      <section class="card card-sites" data-animate>
-        <div class="card-head">
-          <h2>Отслеживаемые сайты</h2>
-          <p class="card-desc">Сайты, которые автоматически анализируются расширением. Риск рядом с сайтом — это эвристическая оценка его поведения.</p>
-        </div>
-        <div class="input-group">
-          <input id="site-input" type="url" placeholder="https://example.com" aria-label="URL сайта">
-          <button id="add-site-btn" type="button">Добавить</button>
-        </div>
-        <p id="site-feedback" class="feedback" aria-live="polite"></p>
-        <div class="sites-list" id="sites-list" role="list"></div>
-        <div class="risk-guide" aria-label="Расшифровка уровней риска">
-          <p class="risk-guide-title">Уровни риска</p>
-          <p class="risk-guide-row"><span class="badge badge-ok">Низкий</span><span>0-34/100: типичное поведение</span></p>
-          <p class="risk-guide-row"><span class="badge badge-warn">Средний</span><span>35-69/100: есть подозрительные сигналы</span></p>
-          <p class="risk-guide-row"><span class="badge badge-risk">Высокий</span><span>70-100/100: выраженные риски</span></p>
-        </div>
-      </section>
+    <section class="summary-grid">
+      <article><span>Всего остановлено</span><strong id="total-blocked">0</strong></article>
+      <article><span>Утечки токенов</span><strong id="blocked-leaks">0</strong></article>
+      <article><span>Опасные формы</span><strong id="blocked-forms">0</strong></article>
+    </section>
 
-      <section class="card card-whitelist" data-animate>
-        <div class="card-head">
-          <h2>Белый список</h2>
-          <p class="card-desc">Сайты из этого списка не анализируются и не попадают в мониторинг, пока вы не вернёте их обратно.</p>
-        </div>
-        <div class="input-group">
-          <input id="whitelist-input" type="url" placeholder="https://example.com" aria-label="URL сайта для белого списка">
-          <button id="add-whitelist-btn" type="button">Добавить</button>
-        </div>
-        <p id="whitelist-feedback" class="feedback" aria-live="polite"></p>
-        <div class="sites-list sites-list-compact" id="whitelist-list" role="list"></div>
-      </section>
+    <div class="columns">
+      <div>
+        <section class="panel">
+          <div class="section-head"><div><h2>Защита</h2><p>Изменения применяются ко всем открытым страницам.</p></div><label class="switch"><input id="protection-enabled" type="checkbox"><span></span></label></div>
+          <label class="field"><span>Режим</span><select id="protection-mode"><option value="balanced">Сбалансированный</option><option value="strict">Строгий</option><option value="monitor">Только наблюдение</option></select><small>Сбалансированный режим блокирует точное совпадение секрета при отправке на чужой домен.</small></label>
+          <label class="check"><input id="block-forms" type="checkbox"><span><strong>Опасные формы</strong><small>Останавливать пароли и платёжные данные без HTTPS или на другом сайте.</small></span></label>
+          <label class="check"><input id="protect-links" type="checkbox"><span><strong>Безопасные внешние вкладки</strong><small>Автоматически закрывать доступ через window.opener.</small></span></label>
+          <label class="check"><input id="notifications" type="checkbox"><span><strong>Уведомления</strong><small>Сообщать только о реально заблокированных утечках.</small></span></label>
+          <label class="check"><input id="logging" type="checkbox"><span><strong>Локальный журнал</strong><small>Хранить метаданные событий без секретных значений.</small></span></label>
+        </section>
 
-      <section class="card card-logs" data-animate>
-        <div class="card-head card-head--row">
-          <div>
-            <h2>Журнал событий</h2>
-            <p class="card-desc">Понятный журнал действий: шифрование, анализ, AI, настройки и системные события.</p>
+        <section class="panel">
+          <div class="section-head"><div><h2>Разрешённые назначения</h2><p>Для API на другом домене, которому вы доверяете.</p></div></div>
+          <label class="field"><span>Домены, по одному в строке</span><textarea id="trusted-destinations" rows="4" placeholder="api.example.com"></textarea><small>Добавляйте только известные вам серверы. Поддомены также будут разрешены.</small></label>
+        </section>
+
+        <details class="panel advanced">
+          <summary><span><strong>Локальный AI-анализ</strong><small>Необязательная вторичная оценка телеметрии</small></span><b>+</b></summary>
+          <div class="details-body">
+            <label class="field"><span>Режим анализа</span><select id="analysis-mode"><option value="local">Только эвристики</option><option value="hybrid">LM Studio + эвристики</option></select></label>
+            <label class="field"><span>Loopback endpoint</span><input id="lm-endpoint" type="url" value="http://127.0.0.1:1234/v1/chat/completions"></label>
+            <label class="field"><span>Модель</span><input id="lm-model" type="text" autocomplete="off"></label>
+            <button id="test-lm" class="secondary" type="button">Проверить соединение</button><span id="lm-status" class="inline-status"></span>
           </div>
-          <button id="clear-logs-btn" type="button">Очистить</button>
-        </div>
-        <div class="log-toolbar">
-          <div class="log-filter-group" id="log-category-filters" aria-label="Фильтр по категории"></div>
-          <label class="log-filter-select" for="log-level-filter">
-            <span>Уровень</span>
-            <select id="log-level-filter">
-              <option value="all">Все уровни</option>
-              <option value="info">Информация</option>
-              <option value="success">Успех</option>
-              <option value="warn">Предупреждения</option>
-              <option value="error">Ошибки</option>
-            </select>
-          </label>
-        </div>
-        <div class="logs-summary-row">
-          <strong id="logs-counter">0</strong>
-          <p id="logs-summary">Журнал пуст.</p>
-        </div>
-        <div class="logs-list" id="logs-list" role="log" aria-live="polite">
-          <p class="empty-state">Логи пока пусты</p>
-        </div>
-      </section>
-    </div>
+        </details>
+      </div>
 
-    <div class="column column-side">
-      <section class="card card-security" data-animate>
-        <h2>Общая безопасность</h2>
-        <div class="stat-item">
-          <span>Индекс безопасности</span>
-          <strong id="security-score" aria-live="polite">100 / 100</strong>
-        </div>
-        <div class="progress" role="progressbar" aria-valuenow="100" aria-valuemin="0" aria-valuemax="100">
-          <div class="progress-bar" id="security-bar"></div>
-        </div>
-        <p class="card-desc" id="risk-desc" data-risk="low">Уровень риска: низкий.</p>
-      </section>
-
-      <section class="card card-threats" data-animate>
-        <h2>Статистика угроз</h2>
-        <div class="stats-visual" id="stats-chart" aria-hidden="true">
-          <div class="stats-chart">
-            <div class="chart-col">
-              <strong class="chart-value" id="chart-value-today">0</strong>
-              <div class="chart-track">
-                <div class="chart-bar" id="chart-bar-today"></div>
-              </div>
-              <span class="chart-label">Today</span>
-            </div>
-            <div class="chart-col">
-              <strong class="chart-value" id="chart-value-month">0</strong>
-              <div class="chart-track">
-                <div class="chart-bar" id="chart-bar-month"></div>
-              </div>
-              <span class="chart-label">Month</span>
-            </div>
-            <div class="chart-col">
-              <strong class="chart-value" id="chart-value-sites">0</strong>
-              <div class="chart-track">
-                <div class="chart-bar" id="chart-bar-sites"></div>
-              </div>
-              <span class="chart-label">Sites</span>
-            </div>
-          </div>
-        </div>
-        <div class="stats-grid">
-          <div class="stat-tile">
-            <span class="tile-label">Операций сегодня</span>
-            <strong id="threats-today" aria-live="polite">0</strong>
-          </div>
-          <div class="stat-tile">
-            <span class="tile-label">Операций за месяц</span>
-            <strong id="threats-month" aria-live="polite">0</strong>
-          </div>
-          <div class="stat-tile">
-            <span class="tile-label">Сайтов под наблюдением</span>
-            <strong id="sites-monitored" aria-live="polite">0</strong>
-          </div>
-        </div>
-        <p class="card-desc">Метрики обновляются автоматически при активности расширения.</p>
-      </section>
-
-      <section class="card card-settings" data-animate>
-        <h2>Настройки расширения</h2>
-        <form id="settings-form" novalidate>
-          <div class="settings-row">
-            <label for="mode-select">Режим анализа</label>
-            <select id="mode-select">
-              <option value="local">Локальный</option>
-              <option value="hybrid">Гибридный (с использованием нейросети)</option>
-            </select>
-          </div>
-
-          <div class="settings-row">
-            <label for="full-analysis-policy">Запуск гибридного анализа</label>
-            <select id="full-analysis-policy">
-              <option value="always">Всегда в гибридном режиме</option>
-              <option value="smart">Только на подозрительных сайтах</option>
-            </select>
-          </div>
-          <div class="settings-row">
-            <label for="lm-endpoint">API</label>
-            <input id="lm-endpoint" type="url" placeholder="http://127.0.0.1:1234/v1/chat/completions">
-          </div>
-
-          <div class="settings-actions">
-            <button type="button" id="test-lm-btn">Проверить доступ к API</button>
-            <p id="lm-test-status" class="feedback" aria-live="polite"></p>
-          </div>
-
-          <label class="toggle-row" for="notifications">
-            <input id="notifications" type="checkbox" checked>
-            <span>Уведомления</span>
-          </label>
-
-          <label class="toggle-row" for="logging">
-            <input id="logging" type="checkbox" checked>
-            <span>Логирование</span>
-          </label>
-
-          <button type="submit" id="save-settings-btn">Сохранить настройки</button>
-        </form>
-      </section>
+      <aside>
+        <section class="panel"><div class="section-head"><div><h2>Доверенные сайты</h2><p>На них блокировка приостановлена.</p></div></div><div id="trusted-sites" class="site-list"></div></section>
+        <section class="panel"><div class="section-head"><div><h2>Последние события</h2><p>Только адреса и тип срабатывания.</p></div><button id="clear-data" class="text-button" type="button">Очистить</button></div><div id="events" class="event-list"></div></section>
+      </aside>
     </div>
   </main>
-
-  <script src="src/options/state.js"></script>
-  <script src="src/options/app.js"></script>
-  <script src="src/options/sites.js"></script>
-  <script src="src/options/stats.js"></script>
-  <script src="src/options/settings.js"></script>
-  <script src="src/options/logs.js"></script>
-  <script src="src/options/actions.js"></script>
-  <script src="src/options/log-format.js"></script>
-  <script src="src/options/site-utils.js"></script>
-  <script src="src/options/ui-utils.js"></script>
+  <script src="options.js"></script>
 </body>
 </html>
